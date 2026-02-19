@@ -1,0 +1,73 @@
+name: NumerAI Weekly Submission
+
+on:
+  schedule:
+    - cron: "0 14 * * 6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NUMERAI_PUBLIC_ID: ${{ secrets.NUMERAI_PUBLIC_ID }}
+      NUMERAI_SECRET_KEY: ${{ secrets.NUMERAI_SECRET_KEY }}
+      NUMERAI_MODEL_NAME: ${{ secrets.NUMERAI_MODEL_NAME }}
+      NUMERAI_DATASET_VERSION: v4.3
+
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+      WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
+      WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
+      WANDB_MODEL_NAME: lgbm_numerai_v43
+
+      MAX_ABS_EXPOSURE: "0.30"
+      MIN_PRED_STD: "1e-6"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-infer.txt
+
+      - name: Run inference and submit
+        id: infer
+        run: python src/inference.py
+
+      - name: Open issue when drift guard aborts
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = "🚨 NumerAI pipeline failed (drift guard or runtime error)";
+            const body = [
+              "The scheduled NumerAI submission workflow failed and aborted submission.",
+              "",
+              "Possible causes:",
+              "- Live schema drift / missing feature columns",
+              "- Prediction quality gate failure (NaN/Inf/all-zero/low-variance)",
+              "- Feature exposure breach",
+              "- Auth/API issues",
+              "",
+              `Run logs: ${runUrl}`
+            ].join("\n");
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ["automated-alert", "numerai"]
+            });
