@@ -19,7 +19,7 @@ class DriftGuardError(RuntimeError):
 
 
 def _env(name: str) -> str:
-    value = os.getenv(name)
+    value = os.getenv(name, "").strip()
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
@@ -35,15 +35,19 @@ def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
     artifact = api.artifact(ref, type="model")
     root = Path(artifact.download(root="artifacts"))
 
-    model_path = root / f"{model_name}.txt"
     features_path = root / "features.json"
     manifest_path = root / "train_manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    model_filename = manifest.get("model_file", f"{model_name}.txt")
+    model_path = root / model_filename
 
     if not model_path.exists() or not features_path.exists():
-        raise RuntimeError("Model artifact is missing required files.")
+        raise RuntimeError(
+            f"Model artifact is missing required files. "
+            f"Expected model file '{model_filename}' and 'features.json'."
+        )
 
     feature_cols = json.loads(features_path.read_text())
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     model = lgb.Booster(model_file=str(model_path))
     return model, feature_cols, manifest
 
@@ -55,11 +59,23 @@ def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray) -> None:
         raise DriftGuardError("Predictions are all zero")
 
     pred_std = float(np.std(preds))
-    min_std = float(os.getenv("MIN_PRED_STD", "1e-6"))
+    min_pred_std_str = os.getenv("MIN_PRED_STD", "1e-6")
+    try:
+        min_std = float(min_pred_std_str)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Invalid MIN_PRED_STD value {min_pred_std_str!r}: must be a valid float"
+        ) from exc
     if pred_std < min_std:
         raise DriftGuardError(f"Prediction std ({pred_std:.8f}) below threshold {min_std}")
 
-    max_abs_exposure = float(os.getenv("MAX_ABS_EXPOSURE", "0.30"))
+    max_abs_exposure_str = os.getenv("MAX_ABS_EXPOSURE", "0.30")
+    try:
+        max_abs_exposure = float(max_abs_exposure_str)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Invalid MAX_ABS_EXPOSURE value {max_abs_exposure_str!r}: must be a valid float"
+        ) from exc
     exposures = features_df.corrwith(pd.Series(preds, index=features_df.index)).abs()
     feature_exposure = float(exposures.max(skipna=True))
     if np.isnan(feature_exposure):
@@ -89,14 +105,23 @@ def main() -> int:
         raise DriftGuardError(f"Live data missing required features: {missing[:10]}")
 
     x_live = live_df[feature_cols]
-    preds = model.predict(x_live)
+    preds = model.predict(x_live).astype(np.float32)
     apply_quality_gates(x_live, preds)
 
-    submission = pd.DataFrame({"id": live_df["id"], "prediction": preds.astype(np.float32)})
+    if "id" not in live_df.columns:
+        raise DriftGuardError("Live data is missing required 'id' column.")
+    submission = pd.DataFrame({"id": live_df["id"], "prediction": preds})
     submission_path = Path("submission.csv")
     submission.to_csv(submission_path, index=False)
 
-    model_id = napi.get_models().get(numerai_model_name, numerai_model_name)
+    models = napi.get_models()
+    if numerai_model_name not in models:
+        available = ", ".join(sorted(models.keys()))
+        raise RuntimeError(
+            f"Configured NUMERAI_MODEL_NAME '{numerai_model_name}' not found among Numerai models. "
+            f"Available models: {available or 'none'}"
+        )
+    model_id = models[numerai_model_name]
     submission_id = napi.upload_predictions(str(submission_path), model_id=model_id)
 
     print(f"submission_id={submission_id}")

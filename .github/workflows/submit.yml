@@ -2,7 +2,7 @@ name: NumerAI Weekly Submission
 
 on:
   schedule:
-    - cron: "0 14 * * 6"
+    - cron: "0 19 * * 6"
   workflow_dispatch:
 
 permissions:
@@ -46,7 +46,7 @@ jobs:
         run: python src/inference.py
 
       - name: Open issue when drift guard aborts
-        if: failure()
+        if: steps.infer.outcome == 'failure'
         uses: actions/github-script@v7
         with:
           script: |

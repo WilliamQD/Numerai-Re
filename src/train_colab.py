@@ -65,12 +65,33 @@ def _download_with_numerapi(cfg: TrainConfig, data_dir: Path) -> tuple[Path, Pat
 
 
 def _load_feature_list(features_path: Path, feature_set_name: str) -> list[str]:
-    payload = json.loads(features_path.read_text())
-    feature_sets = payload["feature_sets"]
+    try:
+        payload = json.loads(features_path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Malformed JSON in features file {features_path}: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"Unexpected JSON structure in features file {features_path}: expected a JSON object at the top level."
+        )
+
+    feature_sets = payload.get("feature_sets")
+    if not isinstance(feature_sets, dict):
+        raise ValueError(
+            f'Missing or invalid "feature_sets" key in features file {features_path}: '
+            "expected an object mapping names to lists of features."
+        )
+
     if feature_set_name not in feature_sets:
         available = ", ".join(sorted(feature_sets.keys()))
         raise ValueError(f"Unknown feature set: {feature_set_name}. Available: {available}")
-    return feature_sets[feature_set_name]
+
+    feature_list = feature_sets[feature_set_name]
+    if not isinstance(feature_list, list) or not all(isinstance(f, str) for f in feature_list):
+        raise ValueError(
+            f'Feature set "{feature_set_name}" in file {features_path} is not a list of feature name strings.'
+        )
+    return feature_list
 
 
 def _downcast_floats(lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -96,7 +117,20 @@ def train() -> None:
         model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v43"),
     )
 
-    wandb.login()
+    wandb_api_key = os.getenv("WANDB_API_KEY", "").strip()
+    if not wandb_api_key:
+        raise RuntimeError(
+            "WANDB_API_KEY environment variable is not set. "
+            "Please set it before running training to enable Weights & Biases logging."
+        )
+
+    try:
+        wandb.login()
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to authenticate with Weights & Biases. "
+            "Check that WANDB_API_KEY is set correctly and has not expired."
+        ) from exc
     run = wandb.init(
         project=os.getenv("WANDB_PROJECT", "numerai-mlops"),
         entity=os.getenv("WANDB_ENTITY"),
@@ -148,7 +182,8 @@ def train() -> None:
     )
 
     best_iter = int(model.best_iteration)
-    best_rmse = float(evals_result["valid"]["rmse"][best_iter - 1])
+    best_rmse_index = max(0, best_iter - 1)
+    best_rmse = float(evals_result["valid"]["rmse"][best_rmse_index])
     wandb.log({"best_iteration": best_iter, "best_valid_rmse": best_rmse})
 
     out_dir = Path("artifacts")
@@ -171,6 +206,7 @@ def train() -> None:
                 "best_valid_rmse": best_rmse,
                 "n_features": len(feature_cols),
                 "model_name": cfg.model_name,
+                "model_file": f"{cfg.model_name}.txt",
                 "lgb_params": LGB_PARAMS,
             },
             indent=2,
