@@ -31,7 +31,7 @@ class TrainConfig:
     early_stopping_rounds: int = 250
 
 
-LGB_PARAMS = {
+BASE_LGB_PARAMS = {
     "objective": "regression",
     "metric": "rmse",
     "learning_rate": 0.02,
@@ -46,6 +46,17 @@ LGB_PARAMS = {
     "device": "gpu",
     "gpu_use_dp": False,
 }
+
+
+def _resolve_lgb_params() -> dict[str, object]:
+    params = dict(BASE_LGB_PARAMS)
+    device = os.getenv("LGBM_DEVICE", "gpu").strip().lower() or "gpu"
+    if device not in {"gpu", "cpu"}:
+        raise ValueError("Invalid LGBM_DEVICE. Expected one of: gpu, cpu.")
+    params["device"] = device
+    if device != "gpu":
+        params.pop("gpu_use_dp", None)
+    return params
 
 
 def _download_with_numerapi(cfg: TrainConfig, data_dir: Path) -> tuple[Path, Path, Path]:
@@ -117,6 +128,8 @@ def train() -> None:
         model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v43"),
     )
 
+    lgb_params = _resolve_lgb_params()
+
     wandb_api_key = os.getenv("WANDB_API_KEY", "").strip()
     if not wandb_api_key:
         raise RuntimeError(
@@ -143,7 +156,7 @@ def train() -> None:
             "era_col": cfg.era_col,
             "num_boost_round": cfg.num_boost_round,
             "early_stopping_rounds": cfg.early_stopping_rounds,
-            **LGB_PARAMS,
+            **lgb_params,
         },
     )
 
@@ -169,7 +182,7 @@ def train() -> None:
 
     evals_result: dict[str, dict[str, list[float]]] = {}
     model = lgb.train(
-        params=LGB_PARAMS,
+        params=lgb_params,
         train_set=dtrain,
         num_boost_round=cfg.num_boost_round,
         valid_sets=[dtrain, dvalid],
@@ -207,7 +220,7 @@ def train() -> None:
                 "n_features": len(feature_cols),
                 "model_name": cfg.model_name,
                 "model_file": f"{cfg.model_name}.txt",
-                "lgb_params": LGB_PARAMS,
+                "lgb_params": lgb_params,
             },
             indent=2,
         )
