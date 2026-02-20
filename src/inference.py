@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -14,21 +13,18 @@ import wandb
 from numerapi import NumerAPI
 
 
+from src.config import InferenceRuntimeConfig
+
+
 class DriftGuardError(RuntimeError):
     """Raised when quality gates fail and submission must abort safely."""
 
 
-def _env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return value
 
-
-def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
-    entity = _env("WANDB_ENTITY")
-    project = _env("WANDB_PROJECT")
-    model_name = os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v43")
+def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[lgb.Booster, list[str], dict]:
+    entity = cfg.wandb_entity
+    project = cfg.wandb_project
+    model_name = cfg.wandb_model_name
 
     api = wandb.Api()
     ref = f"{entity}/{project}/{model_name}:prod"
@@ -52,52 +48,35 @@ def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
     return model, feature_cols, manifest
 
 
-def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray) -> None:
+def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray, cfg: InferenceRuntimeConfig) -> None:
     if np.isnan(preds).any() or np.isinf(preds).any():
         raise DriftGuardError("Predictions contain NaN/Inf")
     if np.allclose(preds, 0.0):
         raise DriftGuardError("Predictions are all zero")
 
     pred_std = float(np.std(preds))
-    min_pred_std_str = os.getenv("MIN_PRED_STD", "1e-6")
-    try:
-        min_std = float(min_pred_std_str)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Invalid MIN_PRED_STD value {min_pred_std_str!r}: must be a valid float"
-        ) from exc
-    if pred_std < min_std:
-        raise DriftGuardError(f"Prediction std ({pred_std:.8f}) below threshold {min_std}")
+    if pred_std < cfg.min_pred_std:
+        raise DriftGuardError(f"Prediction std ({pred_std:.8f}) below threshold {cfg.min_pred_std}")
 
-    max_abs_exposure_str = os.getenv("MAX_ABS_EXPOSURE", "0.30")
-    try:
-        max_abs_exposure = float(max_abs_exposure_str)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Invalid MAX_ABS_EXPOSURE value {max_abs_exposure_str!r}: must be a valid float"
-        ) from exc
     exposures = features_df.corrwith(pd.Series(preds, index=features_df.index)).abs()
     feature_exposure = float(exposures.max(skipna=True))
     if np.isnan(feature_exposure):
         raise DriftGuardError("Feature exposure could not be computed (NaN).")
-    if feature_exposure > max_abs_exposure:
+    if feature_exposure > cfg.max_abs_exposure:
         raise DriftGuardError(
-            f"Max feature exposure {feature_exposure:.5f} exceeds threshold {max_abs_exposure:.5f}"
+            f"Max feature exposure {feature_exposure:.5f} exceeds threshold {cfg.max_abs_exposure:.5f}"
         )
 
 
 def main() -> int:
-    numerai_public_id = _env("NUMERAI_PUBLIC_ID")
-    numerai_secret_key = _env("NUMERAI_SECRET_KEY")
-    numerai_model_name = _env("NUMERAI_MODEL_NAME")
+    cfg = InferenceRuntimeConfig.from_env()
 
-    napi = NumerAPI(public_id=numerai_public_id, secret_key=numerai_secret_key)
+    napi = NumerAPI(public_id=cfg.numerai_public_id, secret_key=cfg.numerai_secret_key)
 
-    dataset_version = os.getenv("NUMERAI_DATASET_VERSION", "v4.3")
     live_path = Path("live.parquet")
-    napi.download_dataset(f"{dataset_version}/live.parquet", str(live_path))
+    napi.download_dataset(f"{cfg.dataset_version}/live.parquet", str(live_path))
 
-    model, feature_cols, manifest = load_prod_model()
+    model, feature_cols, manifest = load_prod_model(cfg)
 
     live_df = pd.read_parquet(live_path)
     missing = [c for c in feature_cols if c not in live_df.columns]
@@ -106,7 +85,7 @@ def main() -> int:
 
     x_live = live_df[feature_cols]
     preds = model.predict(x_live).astype(np.float32)
-    apply_quality_gates(x_live, preds)
+    apply_quality_gates(x_live, preds, cfg)
 
     if "id" not in live_df.columns:
         raise DriftGuardError("Live data is missing required 'id' column.")
@@ -115,13 +94,13 @@ def main() -> int:
     submission.to_csv(submission_path, index=False)
 
     models = napi.get_models()
-    if numerai_model_name not in models:
+    if cfg.numerai_model_name not in models:
         available = ", ".join(sorted(models.keys()))
         raise RuntimeError(
-            f"Configured NUMERAI_MODEL_NAME '{numerai_model_name}' not found among Numerai models. "
+            f"Configured NUMERAI_MODEL_NAME '{cfg.numerai_model_name}' not found among Numerai models. "
             f"Available models: {available or 'none'}"
         )
-    model_id = models[numerai_model_name]
+    model_id = models[cfg.numerai_model_name]
     submission_id = napi.upload_predictions(str(submission_path), model_id=model_id)
 
     print(f"submission_id={submission_id}")

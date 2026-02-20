@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import gc
 import json
-import os
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,16 +17,7 @@ import polars as pl
 import wandb
 from numerapi import NumerAPI
 
-
-@dataclass(frozen=True)
-class TrainConfig:
-    dataset_version: str = "v4.3"
-    feature_set_name: str = "medium"
-    target_col: str = "target"
-    era_col: str = "era"
-    model_name: str = "lgbm_numerai_v43"
-    num_boost_round: int = 5000
-    early_stopping_rounds: int = 250
+from src.config import TrainRuntimeConfig
 
 
 BASE_LGB_PARAMS = {
@@ -48,18 +37,15 @@ BASE_LGB_PARAMS = {
 }
 
 
-def _resolve_lgb_params() -> dict[str, object]:
+def _resolve_lgb_params(cfg: TrainRuntimeConfig) -> dict[str, object]:
     params = dict(BASE_LGB_PARAMS)
-    device = os.getenv("LGBM_DEVICE", "gpu").strip().lower() or "gpu"
-    if device not in {"gpu", "cpu"}:
-        raise ValueError("Invalid LGBM_DEVICE. Expected one of: gpu, cpu.")
-    params["device"] = device
-    if device != "gpu":
+    params["device"] = cfg.lgbm_device
+    if cfg.lgbm_device != "gpu":
         params.pop("gpu_use_dp", None)
     return params
 
 
-def _download_with_numerapi(cfg: TrainConfig, data_dir: Path) -> tuple[Path, Path, Path]:
+def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Path, Path, Path]:
     """Download train/validation/features files, matching official example flow."""
     data_dir.mkdir(parents=True, exist_ok=True)
     napi = NumerAPI()
@@ -123,19 +109,9 @@ def _load_frame(path: Path, selected_cols: list[str]) -> pl.DataFrame:
 
 
 def train() -> None:
-    cfg = TrainConfig(
-        feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "medium"),
-        model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v43"),
-    )
+    cfg = TrainRuntimeConfig.from_env()
 
-    lgb_params = _resolve_lgb_params()
-
-    wandb_api_key = os.getenv("WANDB_API_KEY", "").strip()
-    if not wandb_api_key:
-        raise RuntimeError(
-            "WANDB_API_KEY environment variable is not set. "
-            "Please set it before running training to enable Weights & Biases logging."
-        )
+    lgb_params = _resolve_lgb_params(cfg)
 
     try:
         wandb.login()
@@ -145,8 +121,8 @@ def train() -> None:
             "Check that WANDB_API_KEY is set correctly and has not expired."
         ) from exc
     run = wandb.init(
-        project=os.getenv("WANDB_PROJECT", "numerai-mlops"),
-        entity=os.getenv("WANDB_ENTITY"),
+        project=cfg.wandb_project,
+        entity=cfg.wandb_entity,
         job_type="train",
         tags=["numerai", cfg.dataset_version, "colab", "lightgbm"],
         config={
@@ -160,8 +136,7 @@ def train() -> None:
         },
     )
 
-    data_dir = Path(os.getenv("NUMERAI_DATA_DIR", "/content/numerai_data"))
-    train_path, validation_path, features_path = _download_with_numerapi(cfg, data_dir)
+    train_path, validation_path, features_path = _download_with_numerapi(cfg, cfg.numerai_data_dir)
     feature_cols = _load_feature_list(features_path, cfg.feature_set_name)
 
     selected_cols = feature_cols + [cfg.target_col, cfg.era_col]
