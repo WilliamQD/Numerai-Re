@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -13,7 +15,12 @@ import wandb
 from numerapi import NumerAPI
 
 
-from src.config import InferenceRuntimeConfig
+FEATURES_FILENAME = "features.json"
+MANIFEST_FILENAME = "train_manifest.json"
+REQUIRED_MANIFEST_KEYS = ("model_file", "dataset_version", "feature_set")
+
+
+logger = logging.getLogger(__name__)
 
 
 class DriftGuardError(RuntimeError):
@@ -33,6 +40,48 @@ def _parse_env_float(name: str, default: str) -> float:
         ) from exc
 
 
+def _resolve_manifest(manifest_path: Path, model_name: str) -> tuple[dict, str]:
+    if not manifest_path.exists():
+        logger.warning(
+            "Manifest file '%s' is missing. Falling back to default model filename.",
+            MANIFEST_FILENAME,
+        )
+        return {}, f"{model_name}.txt"
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError:
+        logger.warning(
+            "Manifest file '%s' is malformed JSON. Falling back to default model filename.",
+            MANIFEST_FILENAME,
+        )
+        return {}, f"{model_name}.txt"
+    if not isinstance(manifest, dict):
+        logger.warning(
+            "Manifest file '%s' is not a JSON object. Falling back to default model filename.",
+            MANIFEST_FILENAME,
+        )
+        return {}, f"{model_name}.txt"
+
+    missing_keys = [key for key in REQUIRED_MANIFEST_KEYS if key not in manifest]
+    if missing_keys:
+        logger.warning(
+            "Manifest file '%s' is missing required keys %s. Falling back to default model filename.",
+            MANIFEST_FILENAME,
+            missing_keys,
+        )
+        return manifest, f"{model_name}.txt"
+
+    model_filename = manifest.get("model_file")
+    if not isinstance(model_filename, str) or not model_filename.strip():
+        logger.warning(
+            "Manifest key 'model_file' is invalid. Falling back to default model filename.",
+        )
+        return manifest, f"{model_name}.txt"
+
+    return manifest, model_filename
+
+
 def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
     entity = _env("WANDB_ENTITY")
     project = _env("WANDB_PROJECT")
@@ -43,16 +92,15 @@ def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
     artifact = api.artifact(ref, type="model")
     root = Path(artifact.download(root="artifacts"))
 
-    features_path = root / "features.json"
-    manifest_path = root / "train_manifest.json"
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
-    model_filename = manifest.get("model_file", f"{model_name}.txt")
+    features_path = root / FEATURES_FILENAME
+    manifest_path = root / MANIFEST_FILENAME
+    manifest, model_filename = _resolve_manifest(manifest_path, model_name)
     model_path = root / model_filename
 
     if not model_path.exists() or not features_path.exists():
         raise RuntimeError(
             f"Model artifact is missing required files. "
-            f"Expected model file '{model_filename}' and 'features.json'."
+            f"Expected model file '{model_filename}' and '{FEATURES_FILENAME}'."
         )
 
     feature_cols = json.loads(features_path.read_text())
@@ -132,6 +180,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     try:
         raise SystemExit(main())
     except DriftGuardError as exc:
