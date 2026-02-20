@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -14,10 +13,13 @@ import pandas as pd
 import wandb
 from numerapi import NumerAPI
 
+from config import InferenceRuntimeConfig
+
 
 FEATURES_FILENAME = "features.json"
 MANIFEST_FILENAME = "train_manifest.json"
 REQUIRED_MANIFEST_KEYS = ("model_file", "dataset_version", "feature_set")
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 
 logger = logging.getLogger(__name__)
@@ -25,19 +27,6 @@ logger = logging.getLogger(__name__)
 
 class DriftGuardError(RuntimeError):
     """Raised when quality gates fail and submission must abort safely."""
-
-
-
-
-def _parse_env_float(name: str, default: str) -> float:
-    """Return an environment-backed float with a consistent validation error."""
-    value = os.getenv(name, default).strip()
-    try:
-        return float(value)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Invalid {name} value {value!r}: must be a valid float"
-        ) from exc
 
 
 def _resolve_manifest(manifest_path: Path, model_name: str) -> tuple[dict, str]:
@@ -82,19 +71,16 @@ def _resolve_manifest(manifest_path: Path, model_name: str) -> tuple[dict, str]:
     return manifest, model_filename
 
 
-def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
-    entity = _env("WANDB_ENTITY")
-    project = _env("WANDB_PROJECT")
-    model_name = os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v43")
+def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[lgb.Booster, list[str], dict]:
+    ref = f"{cfg.wandb_entity}/{cfg.wandb_project}/{cfg.wandb_model_name}:prod"
 
     api = wandb.Api()
-    ref = f"{entity}/{project}/{model_name}:prod"
     artifact = api.artifact(ref, type="model")
     root = Path(artifact.download(root="artifacts"))
 
     features_path = root / FEATURES_FILENAME
     manifest_path = root / MANIFEST_FILENAME
-    manifest, model_filename = _resolve_manifest(manifest_path, model_name)
+    manifest, model_filename = _resolve_manifest(manifest_path, cfg.wandb_model_name)
     model_path = root / model_filename
 
     if not model_path.exists() or not features_path.exists():
@@ -105,29 +91,26 @@ def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
 
     feature_cols = json.loads(features_path.read_text())
     model = lgb.Booster(model_file=str(model_path))
+    logger.info(
+        "phase=artifact_uploaded artifact_ref=%s selected_dataset_version=%s n_features=%d",
+        ref,
+        manifest.get("dataset_version", "unknown"),
+        len(feature_cols),
+    )
     return model, feature_cols, manifest
 
 
-def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray) -> None:
-    """Abort inference when prediction quality or risk limits are violated.
-
-    MIN_PRED_STD defines the minimum required prediction standard deviation so
-    submissions retain enough dispersion to be actionable.
-
-    MAX_ABS_EXPOSURE defines the maximum allowed absolute feature exposure,
-    limiting unintended concentration to any single input feature.
-    """
+def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray, cfg: InferenceRuntimeConfig) -> None:
+    """Abort inference when prediction quality or risk limits are violated."""
     if np.isnan(preds).any() or np.isinf(preds).any():
         raise DriftGuardError("Predictions contain NaN/Inf")
     if np.allclose(preds, 0.0):
         raise DriftGuardError("Predictions are all zero")
 
     pred_std = float(np.std(preds))
-    min_std = _parse_env_float("MIN_PRED_STD", "1e-6")
-    if pred_std < min_std:
-        raise DriftGuardError(f"Prediction std ({pred_std:.8f}) below threshold {min_std}")
+    if pred_std < cfg.min_pred_std:
+        raise DriftGuardError(f"Prediction std ({pred_std:.8f}) below threshold {cfg.min_pred_std}")
 
-    max_abs_exposure = _parse_env_float("MAX_ABS_EXPOSURE", "0.30")
     exposures = features_df.corrwith(pd.Series(preds, index=features_df.index)).abs()
     feature_exposure = float(exposures.max(skipna=True))
     if np.isnan(feature_exposure):
@@ -140,15 +123,29 @@ def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray) -> None:
 
 def main() -> int:
     cfg = InferenceRuntimeConfig.from_env()
+    logger.info(
+        "phase=config_loaded dataset_version=%s model_name=%s numerai_model_name=%s",
+        cfg.dataset_version,
+        cfg.wandb_model_name,
+        cfg.numerai_model_name,
+    )
 
     napi = NumerAPI(public_id=cfg.numerai_public_id, secret_key=cfg.numerai_secret_key)
 
     live_path = Path("live.parquet")
     napi.download_dataset(f"{cfg.dataset_version}/live.parquet", str(live_path))
+    logger.info("phase=datasets_downloaded dataset_version=%s live_path=%s", cfg.dataset_version, live_path)
 
     model, feature_cols, manifest = load_prod_model(cfg)
 
     live_df = pd.read_parquet(live_path)
+    logger.info(
+        "phase=frame_loaded split=live rows=%d cols=%d n_features=%d selected_dataset_version=%s",
+        len(live_df),
+        len(live_df.columns),
+        len(feature_cols),
+        manifest.get("dataset_version", cfg.dataset_version),
+    )
     missing = [c for c in feature_cols if c not in live_df.columns]
     if missing:
         raise DriftGuardError(f"Live data missing required features: {missing[:10]}")
@@ -173,6 +170,12 @@ def main() -> int:
     model_id = models[cfg.numerai_model_name]
     submission_id = napi.upload_predictions(str(submission_path), model_id=model_id)
 
+    logger.info(
+        "phase=prediction_submitted submission_path=%s rows=%d model_id=%s",
+        submission_path,
+        len(submission),
+        model_id,
+    )
     print(f"submission_id={submission_id}")
     if manifest:
         print(f"model_manifest={manifest}")
@@ -180,7 +183,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     try:
         raise SystemExit(main())
     except DriftGuardError as exc:

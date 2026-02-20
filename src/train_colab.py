@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 
 import lightgbm as lgb
@@ -17,10 +19,16 @@ import polars as pl
 import wandb
 from numerapi import NumerAPI
 
+from config import TrainRuntimeConfig
+
 
 FEATURES_FILENAME = "features.json"
 MANIFEST_FILENAME = "train_manifest.json"
 ARTIFACT_SCHEMA_VERSION = 1
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -124,6 +132,13 @@ def _load_frame(path: Path, selected_cols: list[str]) -> pl.DataFrame:
 
 def train() -> None:
     cfg = TrainRuntimeConfig.from_env()
+    logger.info(
+        "phase=config_loaded dataset_version=%s feature_set=%s model_name=%s lgbm_device=%s",
+        cfg.dataset_version,
+        cfg.feature_set_name,
+        cfg.model_name,
+        cfg.lgbm_device,
+    )
 
     lgb_params = _resolve_lgb_params(cfg)
 
@@ -152,10 +167,26 @@ def train() -> None:
 
     train_path, validation_path, features_path = _download_with_numerapi(cfg, cfg.numerai_data_dir)
     feature_cols = _load_feature_list(features_path, cfg.feature_set_name)
+    logger.info(
+        "phase=datasets_downloaded dataset_version=%s data_dir=%s n_features=%d",
+        cfg.dataset_version,
+        cfg.numerai_data_dir,
+        len(feature_cols),
+    )
 
     selected_cols = feature_cols + [cfg.target_col, cfg.era_col]
     train_df = _load_frame(train_path, selected_cols)
     valid_df = _load_frame(validation_path, selected_cols)
+    logger.info(
+        "phase=frame_loaded split=train rows=%d cols=%d",
+        train_df.height,
+        train_df.width,
+    )
+    logger.info(
+        "phase=frame_loaded split=validation rows=%d cols=%d",
+        valid_df.height,
+        valid_df.width,
+    )
 
     x_train = train_df.select(feature_cols).to_pandas()
     y_train = train_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
@@ -186,6 +217,14 @@ def train() -> None:
     best_iter = int(model.best_iteration)
     best_rmse_index = max(0, best_iter - 1)
     best_rmse = float(evals_result["valid"]["rmse"][best_rmse_index])
+    logger.info(
+        "phase=model_trained best_iteration=%d best_valid_rmse=%.6f n_features=%d train_rows=%d valid_rows=%d",
+        best_iter,
+        best_rmse,
+        len(feature_cols),
+        len(y_train),
+        len(y_valid),
+    )
     wandb.log({"best_iteration": best_iter, "best_valid_rmse": best_rmse})
 
     out_dir = Path("artifacts")
@@ -230,8 +269,15 @@ def train() -> None:
     artifact.add_file(str(features_out), name=FEATURES_FILENAME)
     artifact.add_file(str(manifest_out), name=MANIFEST_FILENAME)
     run.log_artifact(artifact, aliases=["latest", "prod"])
+    logger.info(
+        "phase=artifact_uploaded artifact_name=%s aliases=%s model_file=%s",
+        cfg.model_name,
+        "latest,prod",
+        model_path.name,
+    )
     run.finish()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     train()
