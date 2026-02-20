@@ -25,6 +25,17 @@ def _env(name: str) -> str:
     return value
 
 
+def _parse_env_float(name: str, default: str) -> float:
+    """Return an environment-backed float with a consistent validation error."""
+    value = os.getenv(name, default).strip()
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Invalid {name} value {value!r}: must be a valid float"
+        ) from exc
+
+
 def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
     entity = _env("WANDB_ENTITY")
     project = _env("WANDB_PROJECT")
@@ -53,29 +64,25 @@ def load_prod_model() -> tuple[lgb.Booster, list[str], dict]:
 
 
 def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray) -> None:
+    """Abort inference when prediction quality or risk limits are violated.
+
+    MIN_PRED_STD defines the minimum required prediction standard deviation so
+    submissions retain enough dispersion to be actionable.
+
+    MAX_ABS_EXPOSURE defines the maximum allowed absolute feature exposure,
+    limiting unintended concentration to any single input feature.
+    """
     if np.isnan(preds).any() or np.isinf(preds).any():
         raise DriftGuardError("Predictions contain NaN/Inf")
     if np.allclose(preds, 0.0):
         raise DriftGuardError("Predictions are all zero")
 
     pred_std = float(np.std(preds))
-    min_pred_std_str = os.getenv("MIN_PRED_STD", "1e-6")
-    try:
-        min_std = float(min_pred_std_str)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Invalid MIN_PRED_STD value {min_pred_std_str!r}: must be a valid float"
-        ) from exc
+    min_std = _parse_env_float("MIN_PRED_STD", "1e-6")
     if pred_std < min_std:
         raise DriftGuardError(f"Prediction std ({pred_std:.8f}) below threshold {min_std}")
 
-    max_abs_exposure_str = os.getenv("MAX_ABS_EXPOSURE", "0.30")
-    try:
-        max_abs_exposure = float(max_abs_exposure_str)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Invalid MAX_ABS_EXPOSURE value {max_abs_exposure_str!r}: must be a valid float"
-        ) from exc
+    max_abs_exposure = _parse_env_float("MAX_ABS_EXPOSURE", "0.30")
     exposures = features_df.corrwith(pd.Series(preds, index=features_df.index)).abs()
     feature_exposure = float(exposures.max(skipna=True))
     if np.isnan(feature_exposure):
