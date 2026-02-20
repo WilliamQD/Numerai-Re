@@ -90,9 +90,15 @@ def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[lgb.Booster, list[str]
         )
 
     feature_cols = json.loads(features_path.read_text())
+    if not isinstance(feature_cols, list) or not feature_cols or not all(
+        isinstance(col, str) and col for col in feature_cols
+    ):
+        raise RuntimeError(
+            f"Invalid '{FEATURES_FILENAME}' in model artifact: expected a non-empty list of feature names."
+        )
     model = lgb.Booster(model_file=str(model_path))
     logger.info(
-        "phase=artifact_uploaded artifact_ref=%s selected_dataset_version=%s n_features=%d",
+        "phase=artifact_downloaded artifact_ref=%s selected_dataset_version=%s n_features=%d",
         ref,
         manifest.get("dataset_version", "unknown"),
         len(feature_cols),
