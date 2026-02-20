@@ -20,6 +20,11 @@ import wandb
 from numerapi import NumerAPI
 
 
+FEATURES_FILENAME = "features.json"
+MANIFEST_FILENAME = "train_manifest.json"
+ARTIFACT_SCHEMA_VERSION = 1
+
+
 @dataclass(frozen=True)
 class TrainConfig:
     dataset_version: str = "v4.3"
@@ -66,11 +71,11 @@ def _download_with_numerapi(cfg: TrainConfig, data_dir: Path) -> tuple[Path, Pat
 
     train_path = data_dir / "train.parquet"
     validation_path = data_dir / "validation.parquet"
-    features_path = data_dir / "features.json"
+    features_path = data_dir / FEATURES_FILENAME
 
     napi.download_dataset(f"{cfg.dataset_version}/train.parquet", str(train_path))
     napi.download_dataset(f"{cfg.dataset_version}/validation.parquet", str(validation_path))
-    napi.download_dataset(f"{cfg.dataset_version}/features.json", str(features_path))
+    napi.download_dataset(f"{cfg.dataset_version}/{FEATURES_FILENAME}", str(features_path))
 
     return train_path, validation_path, features_path
 
@@ -202,8 +207,8 @@ def train() -> None:
     out_dir = Path("artifacts")
     out_dir.mkdir(exist_ok=True)
     model_path = out_dir / f"{cfg.model_name}.txt"
-    features_out = out_dir / "features.json"
-    manifest_out = out_dir / "train_manifest.json"
+    features_out = out_dir / FEATURES_FILENAME
+    manifest_out = out_dir / MANIFEST_FILENAME
 
     model.save_model(str(model_path))
     features_out.write_text(json.dumps(feature_cols, indent=2))
@@ -215,6 +220,7 @@ def train() -> None:
                 "feature_set": cfg.feature_set_name,
                 "target_col": cfg.target_col,
                 "era_col": cfg.era_col,
+                "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
                 "best_iteration": best_iter,
                 "best_valid_rmse": best_rmse,
                 "n_features": len(feature_cols),
@@ -237,8 +243,8 @@ def train() -> None:
         },
     )
     artifact.add_file(str(model_path), name=f"{cfg.model_name}.txt")
-    artifact.add_file(str(features_out), name="features.json")
-    artifact.add_file(str(manifest_out), name="train_manifest.json")
+    artifact.add_file(str(features_out), name=FEATURES_FILENAME)
+    artifact.add_file(str(manifest_out), name=MANIFEST_FILENAME)
     run.log_artifact(artifact, aliases=["latest", "prod"])
     run.finish()
 
