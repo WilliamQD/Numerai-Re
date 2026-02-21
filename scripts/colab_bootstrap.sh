@@ -12,10 +12,9 @@ canon_url() {
   printf '%s' "${url,,}"
 }
 
-echo "[bootstrap] Expected env vars: REPO_REF (recommended 40-char SHA), REPO_DIR (optional), ALLOW_UNPINNED_REF (optional, default 0)."
+echo "[bootstrap] Expected env vars: REPO_REF (optional 40-char commit SHA), REPO_DIR (optional)."
 echo "[bootstrap] Repo URL (fixed): ${REPO_URL}"
-echo "[bootstrap] Repo ref: ${REPO_REF:-<default branch>}"
-echo "[bootstrap] Allow unpinned ref: ${ALLOW_UNPINNED_REF}"
+echo "[bootstrap] Repo ref: ${REPO_REF:-main/latest}"
 echo "[bootstrap] Repo dir: ${REPO_DIR}"
 
 
@@ -24,9 +23,6 @@ if [[ -n "${REPO_REF}" ]]; then
     echo "[bootstrap] ERROR: REPO_REF must be a full 40-character commit SHA." >&2
     exit 1
   fi
-elif [[ "${ALLOW_UNPINNED_REF}" != "1" ]]; then
-  echo "[bootstrap] ERROR: REPO_REF is required unless ALLOW_UNPINNED_REF=1." >&2
-  exit 1
 fi
 
 echo "[bootstrap] Step 1/4: Checking prerequisites (git, python)."
@@ -48,6 +44,9 @@ cd "${REPO_DIR}"
 git fetch --all --tags --prune
 if [[ -n "${REPO_REF}" ]]; then
   git checkout --detach "${REPO_REF}"
+else
+  git checkout main
+  git pull --ff-only origin main
 fi
 
 echo "[bootstrap] Step 3/4: Installing Python dependencies."
