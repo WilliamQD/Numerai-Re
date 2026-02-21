@@ -19,11 +19,11 @@ This repository implements a **remote-train / auto-submit** pipeline:
 
 1. Open `notebooks/train_colab.ipynb` in Colab.
 2. Set notebook env vars in the first cell:
-   - `REPO_URL` (required)
-   - `REPO_REF` (optional)
+   - `REPO_REF` (recommended: full 40-char commit SHA)
    - `REPO_DIR` (optional, defaults to `/content/Numerai-Re`)
-3. Set Colab Secret `WANDB_API_KEY` (and `GH_TOKEN` only if cloning a private repo).
-4. Run the bootstrap cell, then run the training cell (`src/train_colab.py`).
+   - Repo URL is fixed to `https://github.com/WilliamQD/Numerai-Re.git`.
+3. Set Colab Secret `WANDB_API_KEY`.
+4. Run the setup cell (clone/update + dependency install), then run the training cell (`src/train_colab.py`).
 
 ### Run inference via GitHub Actions
 
@@ -35,8 +35,8 @@ This repository implements a **remote-train / auto-submit** pipeline:
 ## Files
 
 - `.github/workflows/submit.yml`: Weekly CI job and failure alert.
-- `notebooks/train_colab.ipynb`: Thin Colab runner notebook (bootstrap + launch script).
-- `scripts/colab_bootstrap.sh`: Clones repo into Colab runtime, checks out optional ref, installs deps.
+- `notebooks/train_colab.ipynb`: Colab runner notebook (safe repo sync + dependency install + launch).
+- `scripts/colab_bootstrap.sh`: Clones fixed public repo into Colab runtime, enforces origin/ref safety checks, installs deps.
 - `src/train_colab.py`: Main training script.
 - `src/inference.py`: Weekly inference + submit script.
 
@@ -47,17 +47,19 @@ This repository implements a **remote-train / auto-submit** pipeline:
 
 1. Open `notebooks/train_colab.ipynb` in Colab.
 2. Set notebook environment variables in the first code cell:
-   - `REPO_URL`: your GitHub clone URL for this repo.
-   - `REPO_REF` (optional): branch/tag/commit SHA to run (pin a SHA for reproducibility).
+   - `REPO_REF`: full 40-character commit SHA to run (recommended for security/reproducibility).
    - `REPO_DIR` (optional): clone path, default `/content/Numerai-Re`.
+   - Repo source is fixed to `https://github.com/WilliamQD/Numerai-Re.git`.
+   - `ALLOW_UNPINNED_REF=1` only if you intentionally want to run default-branch tip (less secure/reproducible).
 3. In Colab **Secrets** (`🔑` sidebar), set:
    - `WANDB_API_KEY` (required for training)
-   - `GH_TOKEN` (optional; only needed for private repo clone over HTTPS)
-4. Run bootstrap cell to clone repo + install `requirements-train.txt`.
+4. Run setup cell to clone/update repo + install `requirements-train.txt`.
 5. Run training cell to execute `src/train_colab.py` from the cloned repo.
 
 ### Notes on secrets
 
+- Colab setup verifies that any pre-existing repository in `REPO_DIR` points to the expected origin before running updates.
+- Colab setup requires `REPO_REF` to be a 40-character commit SHA unless `ALLOW_UNPINNED_REF=1` is set intentionally.
 - `src/train_colab.py` fails fast if `WANDB_API_KEY` is missing.
 - Keep secrets in Colab Secrets or environment variables; never hardcode keys into notebook/code.
 
@@ -78,9 +80,9 @@ This repository implements a **remote-train / auto-submit** pipeline:
 
 | Variable | Script | Default | Purpose |
 | --- | --- | --- | --- |
-| `REPO_REF` | `notebooks/train_colab.ipynb` bootstrap | current default branch | Optional branch/tag/SHA to run in Colab. |
-| `REPO_DIR` | `notebooks/train_colab.ipynb` bootstrap | `/content/Numerai-Re` | Optional clone destination inside Colab runtime. |
-| `GH_TOKEN` | `scripts/colab_bootstrap.sh` | unset | Optional token for cloning private repos from Colab. |
+| `REPO_REF` | `notebooks/train_colab.ipynb` setup | unset | Recommended full 40-character commit SHA to run in Colab. |
+| `REPO_DIR` | `notebooks/train_colab.ipynb` setup | `/content/Numerai-Re` | Optional clone destination inside Colab runtime. |
+| `ALLOW_UNPINNED_REF` | `notebooks/train_colab.ipynb` setup | `0` | Set to `1` to allow running default branch tip without `REPO_REF` (less secure/reproducible). |
 | `NUMERAI_DATA_DIR` | `src/train_colab.py` | `/content/numerai_data` | Override NumerAI dataset download path in Colab. |
 | `NUMERAI_FEATURE_SET` | `src/train_colab.py` | `medium` | Select feature set from NumerAI `features.json`. |
 | `WANDB_MODEL_NAME` | `src/train_colab.py`, `src/inference.py` | `lgbm_numerai_v43` | Override model artifact name for logging/loading. |
