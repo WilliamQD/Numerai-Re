@@ -34,11 +34,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TrainConfig:
-    dataset_version: str = "v4.3"
+    dataset_version: str = "v5.2"
     feature_set_name: str = "medium"
     target_col: str = "target"
     era_col: str = "era"
-    model_name: str = "lgbm_numerai_v43"
+    model_name: str = "lgbm_numerai_v52"
     num_boost_round: int = 5000
     early_stopping_rounds: int = 250
 
