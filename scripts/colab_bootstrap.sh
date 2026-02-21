@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_URL="https://github.com/WilliamQD/Numerai-Re.git"
 REPO_REF="${REPO_REF:-}"
 REPO_DIR="${REPO_DIR:-/content/Numerai-Re}"
+ALLOW_UNPINNED_REF="${ALLOW_UNPINNED_REF:-0}"
 
 canon_url() {
   local url="${1%.git}"
