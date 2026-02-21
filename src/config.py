@@ -9,11 +9,11 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class TrainRuntimeConfig:
-    dataset_version: str = "v4.3"
+    dataset_version: str = "v5.2"
     feature_set_name: str = "medium"
     target_col: str = "target"
     era_col: str = "era"
-    model_name: str = "lgbm_numerai_v43"
+    model_name: str = "lgbm_numerai_v52"
     num_boost_round: int = 5000
     early_stopping_rounds: int = 250
     wandb_project: str = "numerai-mlops"
@@ -36,8 +36,9 @@ class TrainRuntimeConfig:
             raise ValueError("Invalid LGBM_DEVICE. Expected one of: gpu, cpu.")
 
         return cls(
+            dataset_version=os.getenv("NUMERAI_DATASET_VERSION", "v5.2"),
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "medium"),
-            model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v43"),
+            model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v52"),
             wandb_project=os.getenv("WANDB_PROJECT", "numerai-mlops"),
             wandb_entity=os.getenv("WANDB_ENTITY"),
             wandb_api_key=wandb_api_key,
@@ -53,8 +54,8 @@ class InferenceRuntimeConfig:
     numerai_model_name: str
     wandb_entity: str
     wandb_project: str
-    dataset_version: str = "v4.3"
-    wandb_model_name: str = "lgbm_numerai_v43"
+    dataset_version: str = "v5.2"
+    wandb_model_name: str = "lgbm_numerai_v52"
     min_pred_std: float = 1e-6
     max_abs_exposure: float = 0.30
 
@@ -82,8 +83,8 @@ class InferenceRuntimeConfig:
             numerai_model_name=_required_env("NUMERAI_MODEL_NAME"),
             wandb_entity=_required_env("WANDB_ENTITY"),
             wandb_project=_required_env("WANDB_PROJECT"),
-            dataset_version=os.getenv("NUMERAI_DATASET_VERSION", "v4.3"),
-            wandb_model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v43"),
+            dataset_version=os.getenv("NUMERAI_DATASET_VERSION", "v5.2"),
+            wandb_model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v52"),
             min_pred_std=min_pred_std,
             max_abs_exposure=max_abs_exposure,
         )

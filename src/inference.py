@@ -160,9 +160,13 @@ def main() -> int:
     preds = model.predict(x_live).astype(np.float32)
     apply_quality_gates(x_live, preds, cfg)
 
-    if "id" not in live_df.columns:
-        raise DriftGuardError("Live data is missing required 'id' column.")
-    submission = pd.DataFrame({"id": live_df["id"], "prediction": preds})
+    if "id" in live_df.columns:
+        live_id = live_df["id"]
+    elif live_df.index.name == "id":
+        live_id = live_df.index
+    else:
+        raise DriftGuardError("Live data is missing required 'id' (expected as column or index).")
+    submission = pd.DataFrame({"id": live_id, "prediction": preds})
     submission_path = Path("submission.csv")
     submission.to_csv(submission_path, index=False)
 
