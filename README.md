@@ -65,7 +65,7 @@ This repository implements a **remote-train / auto-submit** pipeline:
 - If `REPO_REF` is empty, Colab setup updates and runs the latest `main` branch.
 - `src/train_colab.py` fails fast if `WANDB_API_KEY` is missing.
 - `src/train_colab.py` downloads train/validation/features via `NumerAPI`; these public datasets work without NumerAI keys, but you can optionally set `NUMERAI_PUBLIC_ID` + `NUMERAI_SECRET_KEY` in Colab Secrets for authenticated downloads.
-- Notebook setup auto-loads `WANDB_API_KEY`, `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_ENTITY`, and `WANDB_PROJECT` from Colab Secrets when those environment variables are unset.
+- Notebook setup auto-loads `WANDB_API_KEY`, `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_ENTITY`, and `WANDB_PROJECT` from Colab Secrets when those environment variables are unset; missing secrets are skipped.
 - Keep secrets in Colab Secrets or environment variables; never hardcode keys into notebook/code.
 
 ## Environment variables
