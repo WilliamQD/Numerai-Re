@@ -19,6 +19,8 @@ class TrainRuntimeConfig:
     wandb_project: str = "numerai-mlops"
     wandb_entity: str | None = None
     wandb_api_key: str = ""
+    numerai_public_id: str | None = None
+    numerai_secret_key: str | None = None
     numerai_data_dir: Path = Path("/content/numerai_data")
     lgbm_device: str = "gpu"
 
@@ -34,6 +36,12 @@ class TrainRuntimeConfig:
         lgbm_device = os.getenv("LGBM_DEVICE", "gpu").strip().lower() or "gpu"
         if lgbm_device not in {"gpu", "cpu"}:
             raise ValueError("Invalid LGBM_DEVICE. Expected one of: gpu, cpu.")
+        numerai_public_id = os.getenv("NUMERAI_PUBLIC_ID", "").strip() or None
+        numerai_secret_key = os.getenv("NUMERAI_SECRET_KEY", "").strip() or None
+        if bool(numerai_public_id) != bool(numerai_secret_key):
+            raise RuntimeError(
+                "NUMERAI_PUBLIC_ID and NUMERAI_SECRET_KEY must be set together for authenticated training downloads."
+            )
 
         return cls(
             dataset_version=os.getenv("NUMERAI_DATASET_VERSION", "v5.2"),
@@ -42,6 +50,8 @@ class TrainRuntimeConfig:
             wandb_project=os.getenv("WANDB_PROJECT", "numerai-mlops"),
             wandb_entity=os.getenv("WANDB_ENTITY"),
             wandb_api_key=wandb_api_key,
+            numerai_public_id=numerai_public_id,
+            numerai_secret_key=numerai_secret_key,
             numerai_data_dir=Path(os.getenv("NUMERAI_DATA_DIR", "/content/numerai_data")),
             lgbm_device=lgbm_device,
         )
