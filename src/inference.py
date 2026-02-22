@@ -295,8 +295,12 @@ def main() -> int:
     selected_live_cols = sorted(set(feature_cols + ["era", "id"]))
     try:
         live_df = pd.read_parquet(live_path, columns=selected_live_cols)
-    except (ValueError, KeyError):
-        logger.warning("phase=live_parquet_column_fallback reason=missing_selected_columns")
+    except (ValueError, KeyError) as exc:
+        logger.warning(
+            "phase=live_parquet_column_fallback selected_cols=%s reason=%s",
+            selected_live_cols,
+            exc,
+        )
         live_df = pd.read_parquet(live_path)
     logger.info(
         "phase=frame_loaded split=live rows=%d cols=%d n_features=%d selected_dataset_version=%s",
