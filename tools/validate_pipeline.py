@@ -93,10 +93,17 @@ def _validate_artifact_contract(artifact_dir: Path, expected_dataset_version: st
 
 
 def _validate_import_consistency(failures: list[str]) -> None:
-    train_src = (SRC / "train_colab.py").read_text()
-    infer_src = (SRC / "inference.py").read_text()
-    expected = "from postprocess import PostprocessConfig, apply_postprocess"
-    if expected not in train_src or expected not in infer_src:
+    def _imports_apply_postprocess(path: Path) -> bool:
+        module = ast.parse(path.read_text())
+        for node in ast.walk(module):
+            if not isinstance(node, ast.ImportFrom) or node.module != "postprocess":
+                continue
+            imported = {alias.name for alias in node.names}
+            if {"PostprocessConfig", "apply_postprocess"}.issubset(imported):
+                return True
+        return False
+
+    if not _imports_apply_postprocess(SRC / "train_colab.py") or not _imports_apply_postprocess(SRC / "inference.py"):
         _fail("Training and inference must both import apply_postprocess from src/postprocess.py.", failures)
 
 

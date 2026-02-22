@@ -24,7 +24,7 @@ from numerapi import NumerAPI
 
 from bench_matrix_builder import align_bench_to_ids
 from benchmarks import download_benchmark_parquets, load_benchmark_frame
-from config import TrainRuntimeConfig
+from config import TrainRuntimeConfig, _optional_bool_env
 from era_utils import era_to_int
 from numerai_metrics import mean_per_era_numerai_corr
 from postprocess import PostprocessConfig, apply_postprocess
@@ -886,10 +886,6 @@ def save_and_log_artifact(
     return SavedArtifact(model_paths=model_paths, features_path=features_out, manifest_path=manifest_out)
 
 
-def _env_flag(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _build_synthetic_dry_run_data(cfg: TrainRuntimeConfig, scratch_dir: Path) -> LoadedData:
     rng = np.random.default_rng(7)
     feature_cols = [f"feature_{idx:02d}" for idx in range(8)]
@@ -1223,7 +1219,7 @@ def train() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-    if _env_flag("TRAIN_DRY_RUN"):
+    if _optional_bool_env("TRAIN_DRY_RUN", default=False):
         train_dry_run()
     else:
         train()

@@ -14,7 +14,7 @@ import pandas as pd
 import wandb
 from numerapi import NumerAPI
 
-from config import InferenceRuntimeConfig
+from config import InferenceRuntimeConfig, _optional_bool_env
 from postprocess import PostprocessConfig, apply_postprocess
 
 
@@ -27,10 +27,6 @@ RANK_01_EPSILON = 1e-6
 
 
 logger = logging.getLogger(__name__)
-
-
-def _env_flag(name: str) -> bool:
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class DriftGuardError(RuntimeError):
@@ -265,7 +261,7 @@ def inference_dry_run() -> int:
 
 
 def main() -> int:
-    if _env_flag("INFER_DRY_RUN"):
+    if _optional_bool_env("INFER_DRY_RUN", default=False):
         return inference_dry_run()
     cfg = InferenceRuntimeConfig.from_env()
     logger.info(
