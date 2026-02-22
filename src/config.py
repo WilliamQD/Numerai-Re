@@ -34,6 +34,12 @@ class TrainRuntimeConfig:
     corr_scan_period: int = 100
     corr_scan_max_iters: int | None = None
     select_best_by: str = "corr"
+    walkforward_enabled: bool = True
+    walkforward_chunk_size: int = 156
+    walkforward_purge_eras: int = 8
+    walkforward_max_windows: int = 4
+    walkforward_tune_seed: int | None = None
+    walkforward_log_models: bool = False
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -84,6 +90,23 @@ class TrainRuntimeConfig:
         if select_best_by not in {"rmse", "corr"}:
             raise ValueError("Invalid SELECT_BEST_BY. Expected one of: rmse, corr.")
 
+        walkforward_chunk_size = int(os.getenv("WALKFORWARD_CHUNK_SIZE", "156"))
+        if walkforward_chunk_size <= 0:
+            raise ValueError("Invalid WALKFORWARD_CHUNK_SIZE. Expected positive integer.")
+
+        walkforward_purge_eras = int(os.getenv("WALKFORWARD_PURGE_ERAS", "8"))
+        if walkforward_purge_eras < 0:
+            raise ValueError("Invalid WALKFORWARD_PURGE_ERAS. Expected non-negative integer.")
+
+        walkforward_max_windows = int(os.getenv("WALKFORWARD_MAX_WINDOWS", "4"))
+        if walkforward_max_windows <= 0:
+            raise ValueError("Invalid WALKFORWARD_MAX_WINDOWS. Expected positive integer.")
+
+        walkforward_tune_seed_raw = os.getenv("WALKFORWARD_TUNE_SEED")
+        walkforward_tune_seed = int(walkforward_tune_seed_raw.strip()) if walkforward_tune_seed_raw else lgbm_seeds[0]
+        if walkforward_tune_seed not in lgbm_seeds:
+            raise ValueError("Invalid WALKFORWARD_TUNE_SEED. Expected a value from LGBM_SEEDS.")
+
         return cls(
             dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "medium"),
@@ -107,6 +130,12 @@ class TrainRuntimeConfig:
             corr_scan_period=corr_scan_period,
             corr_scan_max_iters=corr_scan_max_iters,
             select_best_by=select_best_by,
+            walkforward_enabled=_optional_bool_env("WALKFORWARD_ENABLED", default=True),
+            walkforward_chunk_size=walkforward_chunk_size,
+            walkforward_purge_eras=walkforward_purge_eras,
+            walkforward_max_windows=walkforward_max_windows,
+            walkforward_tune_seed=walkforward_tune_seed,
+            walkforward_log_models=_optional_bool_env("WALKFORWARD_LOG_MODELS", default=False),
         )
 
 
