@@ -170,7 +170,7 @@ def _load_feature_list(features_path: Path, feature_set_name: str) -> list[str]:
         raise ValueError(f'Missing or invalid "feature_sets" key in features file {features_path}.')
 
     if feature_set_name == "largest":
-        feature_set_name = max(feature_sets, key=lambda name: len(feature_sets[name]))
+        feature_set_name = max(sorted(feature_sets), key=lambda name: len(feature_sets[name]))
 
     if feature_set_name not in feature_sets:
         available = ", ".join(sorted(feature_sets.keys()))
