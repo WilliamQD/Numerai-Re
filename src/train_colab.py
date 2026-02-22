@@ -21,7 +21,9 @@ import wandb
 from numerapi import NumerAPI
 
 from config import TrainRuntimeConfig
+from era_utils import era_to_int
 from numerai_metrics import mean_per_era_numerai_corr
+from walkforward import build_windows
 
 
 FEATURES_FILENAME = "features.json"
@@ -43,6 +45,10 @@ class LoadedData:
     x_valid: Any
     y_valid: np.ndarray
     era_valid: np.ndarray
+    x_all: Any
+    y_all: np.ndarray
+    era_all: np.ndarray
+    era_all_int: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -63,6 +69,16 @@ class SavedArtifact:
     model_paths: list[Path]
     features_path: Path
     manifest_path: Path
+
+
+@dataclass(frozen=True)
+class WalkforwardReport:
+    recommended_num_iteration: int
+    mean_corr: float
+    std_corr: float
+    sharpe: float
+    hit_rate: float
+    windows: list[dict[str, float | int]]
 
 
 BASE_LGB_PARAMS = {
@@ -174,6 +190,7 @@ def _write_training_checkpoint(
     cfg: TrainRuntimeConfig,
     lgb_params: dict[str, object],
     members: list[dict[str, object]],
+    walkforward: dict[str, object] | None = None,
 ) -> None:
     payload = {
         "dataset_version": cfg.dataset_version,
@@ -183,6 +200,8 @@ def _write_training_checkpoint(
         "completed_seeds": [int(member["seed"]) for member in members],
         "members": members,
     }
+    if walkforward is not None:
+        payload["walkforward"] = walkforward
     tmp_path = checkpoint_path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload, indent=2))
     tmp_path.replace(checkpoint_path)
@@ -192,6 +211,7 @@ def _load_training_checkpoint(
     checkpoint_path: Path,
     cfg: TrainRuntimeConfig,
     lgb_params: dict[str, object],
+    expected_walkforward: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     if not checkpoint_path.exists():
         return []
@@ -212,6 +232,12 @@ def _load_training_checkpoint(
                 f"Checkpoint mismatch for '{key}': got {payload.get(key)!r}, expected {expected_value!r}. "
                 f"Delete {checkpoint_path} to retrain from scratch."
             )
+    if expected_walkforward is not None and payload.get("walkforward") != expected_walkforward:
+        raise RuntimeError(
+            "Checkpoint mismatch for 'walkforward'. "
+            f"Got {payload.get('walkforward')!r}, expected {expected_walkforward!r}. "
+            f"Delete {checkpoint_path} to retrain from scratch."
+        )
 
     members = payload.get("members")
     if not isinstance(members, list):
@@ -228,6 +254,10 @@ def _load_training_checkpoint(
             best_valid_rmse = float(member["best_valid_rmse"])
             best_valid_corr = float(member.get("best_valid_corr", np.nan))
             corr_scan_period = int(member["corr_scan_period"]) if member.get("corr_scan_period") is not None else None
+            train_mode = str(member["train_mode"]) if member.get("train_mode") is not None else None
+            recommended_num_iteration = (
+                int(member["recommended_num_iteration"]) if member.get("recommended_num_iteration") is not None else None
+            )
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(f"Invalid checkpoint member schema in {checkpoint_path}: {member!r}") from exc
         if not model_file:
@@ -240,6 +270,8 @@ def _load_training_checkpoint(
                 "best_valid_rmse": best_valid_rmse,
                 "best_valid_corr": best_valid_corr,
                 "corr_scan_period": corr_scan_period,
+                "train_mode": train_mode,
+                "recommended_num_iteration": recommended_num_iteration,
             }
         )
     return normalized_members
@@ -288,6 +320,11 @@ def init_wandb_run(cfg: TrainRuntimeConfig, lgb_params: dict[str, object]) -> An
             "corr_scan_period": cfg.corr_scan_period,
             "corr_scan_max_iters": cfg.corr_scan_max_iters,
             "select_best_by": cfg.select_best_by,
+            "walkforward_enabled": cfg.walkforward_enabled,
+            "walkforward_chunk_size": cfg.walkforward_chunk_size,
+            "walkforward_purge_eras": cfg.walkforward_purge_eras,
+            "walkforward_max_windows": cfg.walkforward_max_windows,
+            "walkforward_tune_seed": cfg.walkforward_tune_seed,
             **lgb_params,
         },
     )
@@ -316,8 +353,19 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
     x_valid = valid_df.select(feature_cols).to_pandas()
     y_valid = valid_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
     era_valid = valid_df.get_column(cfg.era_col).to_numpy()
+    all_df = pl.concat([train_df, valid_df], how="vertical")
+    x_all = all_df.select(feature_cols).to_pandas()
+    y_all = all_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
+    era_all = all_df.get_column(cfg.era_col).to_numpy()
+    era_all_int = era_to_int(era_all)
 
-    del train_df, valid_df
+    order = np.argsort(era_all_int, kind="stable")
+    x_all = x_all.iloc[order].reset_index(drop=True)
+    y_all = y_all[order]
+    era_all = era_all[order]
+    era_all_int = era_all_int[order]
+
+    del train_df, valid_df, all_df
     gc.collect()
 
     return LoadedData(
@@ -328,7 +376,42 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
         x_valid=x_valid,
         y_valid=y_valid,
         era_valid=era_valid,
+        x_all=x_all,
+        y_all=y_all,
+        era_all=era_all,
+        era_all_int=era_all_int,
     )
+
+
+def _corr_scan_iterations(cfg: TrainRuntimeConfig, max_iter: int) -> list[int]:
+    if cfg.corr_scan_max_iters is not None:
+        max_iter = min(max_iter, int(cfg.corr_scan_max_iters))
+    max_iter = max(1, int(max_iter))
+    scan_period = int(cfg.corr_scan_period)
+    corr_scan_iters = list(range(scan_period, max_iter + 1, scan_period))
+    if not corr_scan_iters or corr_scan_iters[-1] != max_iter:
+        corr_scan_iters.append(max_iter)
+    return corr_scan_iters
+
+
+def _best_corr_iteration(
+    model: lgb.Booster,
+    x_valid: Any,
+    y_valid: np.ndarray,
+    era_valid: np.ndarray,
+    corr_scan_iters: list[int],
+) -> tuple[float, int, list[float]]:
+    best_corr = float("-inf")
+    best_corr_iter = corr_scan_iters[0]
+    corr_curve: list[float] = []
+    for i in corr_scan_iters:
+        preds = model.predict(x_valid, num_iteration=i)
+        corr_i = mean_per_era_numerai_corr(preds, y_valid, era_valid)
+        corr_curve.append(float(corr_i))
+        if corr_i > best_corr:
+            best_corr = float(corr_i)
+            best_corr_iter = int(i)
+    return best_corr, best_corr_iter, corr_curve
 
 
 def fit_lgbm(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: LoadedData, seed: int) -> FitResult:
@@ -381,24 +464,14 @@ def fit_lgbm(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: Loade
     train_curve = [float(v) for v in evals_result["train"]["rmse"]]
     valid_curve = [float(v) for v in evals_result["valid"]["rmse"]]
     max_iter = int(model.current_iteration())
-    if cfg.corr_scan_max_iters is not None:
-        max_iter = min(max_iter, int(cfg.corr_scan_max_iters))
-    max_iter = max(1, max_iter)
-    scan_period = int(cfg.corr_scan_period)
-    corr_scan_iters = list(range(scan_period, max_iter + 1, scan_period))
-    if not corr_scan_iters or corr_scan_iters[-1] != max_iter:
-        corr_scan_iters.append(max_iter)
-
-    best_corr = float("-inf")
-    best_corr_iter = corr_scan_iters[0]
-    corr_curve: list[float] = []
-    for i in corr_scan_iters:
-        preds = model.predict(data.x_valid, num_iteration=i)
-        corr_i = mean_per_era_numerai_corr(preds, data.y_valid, data.era_valid)
-        corr_curve.append(float(corr_i))
-        if corr_i > best_corr:
-            best_corr = float(corr_i)
-            best_corr_iter = int(i)
+    corr_scan_iters = _corr_scan_iterations(cfg, max_iter)
+    best_corr, best_corr_iter, corr_curve = _best_corr_iteration(
+        model=model,
+        x_valid=data.x_valid,
+        y_valid=data.y_valid,
+        era_valid=data.era_valid,
+        corr_scan_iters=corr_scan_iters,
+    )
 
     selected_best_iter = best_corr_iter if cfg.select_best_by == "corr" else best_iter
     logger.info(
@@ -425,6 +498,166 @@ def fit_lgbm(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: Loade
     )
 
 
+def fit_lgbm_final(
+    lgb_params: dict[str, object],
+    x: Any,
+    y: np.ndarray,
+    feature_cols: list[str],
+    seed: int,
+    num_boost_round: int,
+) -> lgb.Booster:
+    dtrain = lgb.Dataset(x, label=y, feature_name=feature_cols)
+    params = dict(lgb_params)
+    params["seed"] = seed
+    return lgb.train(params=params, train_set=dtrain, num_boost_round=num_boost_round)
+
+
+def evaluate_walkforward(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: LoadedData) -> WalkforwardReport:
+    windows = build_windows(
+        era_numbers=data.era_all_int,
+        chunk_size=cfg.walkforward_chunk_size,
+        purge_eras=cfg.walkforward_purge_eras,
+    )
+    if cfg.walkforward_max_windows:
+        windows = windows[-cfg.walkforward_max_windows :]
+    if not windows:
+        raise RuntimeError("No valid walk-forward windows found for current data and configuration.")
+
+    tune_seed = int(cfg.walkforward_tune_seed if cfg.walkforward_tune_seed is not None else cfg.lgbm_seeds[0])
+    rows: list[dict[str, float | int]] = []
+    best_iters: list[int] = []
+    window_corrs: list[float] = []
+
+    for window in windows:
+        train_idx = np.flatnonzero(data.era_all_int <= window.train_end)
+        valid_idx = np.flatnonzero((data.era_all_int >= window.val_start) & (data.era_all_int <= window.val_end))
+        if train_idx.size == 0 or valid_idx.size == 0:
+            continue
+
+        x_train = data.x_all.iloc[train_idx].reset_index(drop=True)
+        y_train = data.y_all[train_idx]
+        x_valid = data.x_all.iloc[valid_idx].reset_index(drop=True)
+        y_valid = data.y_all[valid_idx]
+        era_valid = data.era_all[valid_idx]
+
+        dtrain = lgb.Dataset(x_train, label=y_train, feature_name=data.feature_cols)
+        dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain, feature_name=data.feature_cols)
+
+        fit_params = dict(lgb_params)
+        fit_params["seed"] = tune_seed
+        evals_result: dict[str, dict[str, list[float]]] = {}
+        try:
+            model = lgb.train(
+                params=fit_params,
+                train_set=dtrain,
+                num_boost_round=cfg.num_boost_round,
+                valid_sets=[dtrain, dvalid],
+                valid_names=["train", "valid"],
+                callbacks=[
+                    lgb.early_stopping(cfg.early_stopping_rounds, verbose=False),
+                    lgb.record_evaluation(evals_result),
+                ],
+            )
+        except lgb.basic.LightGBMError as exc:
+            if fit_params.get("device") != "gpu" or "No OpenCL device found" not in str(exc):
+                raise
+            logger.warning("phase=wf_lgbm_gpu_unavailable requested_device=gpu fallback_device=cpu reason=%s", exc)
+            fit_params["device"] = "cpu"
+            fit_params.pop("gpu_use_dp", None)
+            evals_result = {}
+            model = lgb.train(
+                params=fit_params,
+                train_set=dtrain,
+                num_boost_round=cfg.num_boost_round,
+                valid_sets=[dtrain, dvalid],
+                valid_names=["train", "valid"],
+                callbacks=[
+                    lgb.early_stopping(cfg.early_stopping_rounds, verbose=False),
+                    lgb.record_evaluation(evals_result),
+                ],
+            )
+
+        corr_scan_iters = _corr_scan_iterations(cfg, int(model.current_iteration()))
+        best_corr, best_iter, _ = _best_corr_iteration(
+            model=model,
+            x_valid=x_valid,
+            y_valid=y_valid,
+            era_valid=era_valid,
+            corr_scan_iters=corr_scan_iters,
+        )
+        preds = model.predict(x_valid, num_iteration=best_iter)
+        corr_mean_per_era = float(mean_per_era_numerai_corr(preds, y_valid, era_valid))
+
+        row = {
+            "window_id": int(window.window_id),
+            "train_end": int(window.train_end),
+            "val_start": int(window.val_start),
+            "val_end": int(window.val_end),
+            "purge_start": int(window.purge_start),
+            "purge_end": int(window.purge_end),
+            "best_iter": int(best_iter),
+            "best_corr": float(best_corr),
+            "corr_mean_per_era": corr_mean_per_era,
+        }
+        rows.append(row)
+        best_iters.append(int(best_iter))
+        window_corrs.append(corr_mean_per_era)
+
+    if not rows:
+        raise RuntimeError("No walk-forward windows produced usable train/validation splits.")
+
+    corr_arr = np.asarray(window_corrs, dtype=np.float64)
+    mean_corr = float(np.mean(corr_arr))
+    std_corr = float(np.std(corr_arr))
+    sharpe = float(mean_corr / std_corr) if std_corr > 0 else 0.0
+    hit_rate = float(np.mean(corr_arr > 0.0))
+    recommended_num_iteration = int(np.median(np.asarray(best_iters, dtype=np.int32)))
+
+    table = wandb.Table(
+        columns=[
+            "window_id",
+            "train_end",
+            "val_start",
+            "val_end",
+            "purge_start",
+            "purge_end",
+            "best_iter",
+            "best_corr",
+            "corr_mean_per_era",
+        ]
+    )
+    for row in rows:
+        table.add_data(
+            int(row["window_id"]),
+            int(row["train_end"]),
+            int(row["val_start"]),
+            int(row["val_end"]),
+            int(row["purge_start"]),
+            int(row["purge_end"]),
+            int(row["best_iter"]),
+            float(row["best_corr"]),
+            float(row["corr_mean_per_era"]),
+        )
+    wandb.log(
+        {
+            "walkforward/windows": table,
+            "walkforward/mean_corr": mean_corr,
+            "walkforward/std_corr": std_corr,
+            "walkforward/sharpe": sharpe,
+            "walkforward/hit_rate": hit_rate,
+            "walkforward/recommended_num_iteration": recommended_num_iteration,
+        }
+    )
+    return WalkforwardReport(
+        recommended_num_iteration=recommended_num_iteration,
+        mean_corr=mean_corr,
+        std_corr=std_corr,
+        sharpe=sharpe,
+        hit_rate=hit_rate,
+        windows=rows,
+    )
+
+
 def save_and_log_artifact(
     cfg: TrainRuntimeConfig,
     run: Any,
@@ -432,6 +665,7 @@ def save_and_log_artifact(
     data: LoadedData,
     members: list[dict[str, object]],
     checkpoint_dir: Path,
+    wf_report: WalkforwardReport | None = None,
 ) -> SavedArtifact:
     out_dir = Path("artifacts")
     out_dir.mkdir(exist_ok=True)
@@ -447,7 +681,25 @@ def save_and_log_artifact(
 
     features_out = out_dir / FEATURES_FILENAME
     manifest_out = out_dir / MANIFEST_FILENAME
+    wf_windows_out = out_dir / "walkforward_windows.json"
     features_out.write_text(json.dumps(data.feature_cols, indent=2))
+    wf_windows_payload = wf_report.windows if wf_report is not None else []
+    wf_windows_out.write_text(json.dumps(wf_windows_payload, indent=2))
+
+    walkforward_payload = None
+    if wf_report is not None:
+        walkforward_payload = {
+            "enabled": bool(cfg.walkforward_enabled),
+            "chunk_size": int(cfg.walkforward_chunk_size),
+            "purge_eras": int(cfg.walkforward_purge_eras),
+            "max_windows": int(cfg.walkforward_max_windows),
+            "tune_seed": int(cfg.walkforward_tune_seed if cfg.walkforward_tune_seed is not None else cfg.lgbm_seeds[0]),
+            "recommended_num_iteration": int(wf_report.recommended_num_iteration),
+            "mean_corr": float(wf_report.mean_corr),
+            "std_corr": float(wf_report.std_corr),
+            "sharpe": float(wf_report.sharpe),
+            "hit_rate": float(wf_report.hit_rate),
+        }
 
     manifest_out.write_text(
         json.dumps(
@@ -469,6 +721,7 @@ def save_and_log_artifact(
                 "model_file": str(members[0]["model_file"]),
                 "model_files": [path.name for path in model_paths],
                 "lgb_params": lgb_params,
+                "walkforward": walkforward_payload,
             },
             indent=2,
         )
@@ -479,6 +732,7 @@ def save_and_log_artifact(
         artifact.add_file(str(model_path), name=model_path.name)
     artifact.add_file(str(features_out), name=FEATURES_FILENAME)
     artifact.add_file(str(manifest_out), name=MANIFEST_FILENAME)
+    artifact.add_file(str(wf_windows_out), name=wf_windows_out.name)
     run.log_artifact(artifact, aliases=["latest", "candidate"])
 
     logger.info(
@@ -503,11 +757,38 @@ def train() -> None:
     lgb_params = _resolve_lgb_params(cfg)
     run = init_wandb_run(cfg, lgb_params)
     data = load_train_valid_frames(cfg)
+    wf_report: WalkforwardReport | None = None
+    checkpoint_walkforward: dict[str, object] | None = None
+    recommended_iter: int | None = None
+    if cfg.walkforward_enabled:
+        wf_report = evaluate_walkforward(cfg, lgb_params, data)
+        recommended_iter = int(wf_report.recommended_num_iteration)
+        checkpoint_walkforward = {
+            "enabled": True,
+            "chunk_size": int(cfg.walkforward_chunk_size),
+            "purge_eras": int(cfg.walkforward_purge_eras),
+            "max_windows": int(cfg.walkforward_max_windows),
+            "tune_seed": int(cfg.walkforward_tune_seed if cfg.walkforward_tune_seed is not None else cfg.lgbm_seeds[0]),
+            "recommended_num_iteration": recommended_iter,
+        }
+        logger.info(
+            "phase=walkforward_completed recommended_num_iteration=%d mean_corr=%.6f std_corr=%.6f sharpe=%.6f hit_rate=%.6f",
+            recommended_iter,
+            wf_report.mean_corr,
+            wf_report.std_corr,
+            wf_report.sharpe,
+            wf_report.hit_rate,
+        )
     checkpoint_dir = _checkpoint_dir(cfg)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / CHECKPOINT_FILENAME
 
-    members = _load_training_checkpoint(checkpoint_path, cfg, lgb_params)
+    members = _load_training_checkpoint(
+        checkpoint_path,
+        cfg,
+        lgb_params,
+        expected_walkforward=checkpoint_walkforward,
+    )
     completed_seeds = {int(member["seed"]) for member in members}
     if completed_seeds:
         logger.info(
@@ -525,21 +806,57 @@ def train() -> None:
         if seed in completed_seeds:
             logger.info("phase=seed_skipped_already_completed seed=%d", seed)
             continue
-        fit_result = fit_lgbm(cfg, lgb_params, data, seed)
-        model_file = f"{cfg.model_name}_seed{seed}.txt"
-        fit_result.model.save_model(str(checkpoint_dir / model_file), num_iteration=fit_result.best_iteration)
-        member = {
-            "seed": seed,
-            "model_file": model_file,
-            "best_iteration": fit_result.best_iteration,
-            "best_valid_rmse": fit_result.best_valid_rmse,
-            "best_valid_corr": fit_result.best_valid_corr,
-            "corr_scan_period": cfg.corr_scan_period,
-        }
+        if cfg.walkforward_enabled:
+            if recommended_iter is None:
+                raise RuntimeError("Walk-forward is enabled but recommended_num_iteration is not available.")
+            model_file = f"{cfg.model_name}_seed{seed}.txt"
+            final_model = fit_lgbm_final(
+                lgb_params=lgb_params,
+                x=data.x_all,
+                y=data.y_all,
+                feature_cols=data.feature_cols,
+                seed=seed,
+                num_boost_round=recommended_iter,
+            )
+            final_model.save_model(str(checkpoint_dir / model_file), num_iteration=recommended_iter)
+            member = {
+                "seed": seed,
+                "model_file": model_file,
+                "best_iteration": recommended_iter,
+                "best_valid_rmse": float("nan"),
+                "best_valid_corr": float(wf_report.mean_corr if wf_report is not None else np.nan),
+                "corr_scan_period": cfg.corr_scan_period,
+                "train_mode": "walkforward_final",
+                "recommended_num_iteration": recommended_iter,
+            }
+            wandb.log(
+                {
+                    f"seed/{seed}/best_iteration": recommended_iter,
+                    f"seed/{seed}/train_mode": "walkforward_final",
+                }
+            )
+        else:
+            fit_result = fit_lgbm(cfg, lgb_params, data, seed)
+            model_file = f"{cfg.model_name}_seed{seed}.txt"
+            fit_result.model.save_model(str(checkpoint_dir / model_file), num_iteration=fit_result.best_iteration)
+            member = {
+                "seed": seed,
+                "model_file": model_file,
+                "best_iteration": fit_result.best_iteration,
+                "best_valid_rmse": fit_result.best_valid_rmse,
+                "best_valid_corr": fit_result.best_valid_corr,
+                "corr_scan_period": cfg.corr_scan_period,
+            }
+            _log_seed_observability(fit_result)
         members.append(member)
         completed_seeds.add(seed)
-        _write_training_checkpoint(checkpoint_path, cfg, lgb_params, members)
-        _log_seed_observability(fit_result)
+        _write_training_checkpoint(
+            checkpoint_path,
+            cfg,
+            lgb_params,
+            members,
+            walkforward=checkpoint_walkforward,
+        )
         logger.info(
             "phase=seed_checkpoint_saved checkpoint_path=%s seed=%d completed=%d total=%d",
             checkpoint_path,
@@ -579,7 +896,7 @@ def train() -> None:
         }
     )
 
-    save_and_log_artifact(cfg, run, lgb_params, data, members, checkpoint_dir)
+    save_and_log_artifact(cfg, run, lgb_params, data, members, checkpoint_dir, wf_report=wf_report)
     run.finish()
 
 
