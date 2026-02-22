@@ -178,6 +178,8 @@ class InferenceRuntimeConfig:
     wandb_model_name: str = "lgbm_numerai_v52"
     min_pred_std: float = 1e-6
     max_abs_exposure: float = 0.30
+    exposure_sample_rows: int = 200_000
+    exposure_sample_seed: int = 0
     allow_dataset_version_mismatch: bool = False
 
     @classmethod
@@ -197,6 +199,9 @@ class InferenceRuntimeConfig:
             raise RuntimeError(
                 f"Invalid MAX_ABS_EXPOSURE value {max_abs_exposure_str!r}: must be a valid float"
             ) from exc
+        exposure_sample_rows = int(os.getenv("EXPOSURE_SAMPLE_ROWS", "200000"))
+        if exposure_sample_rows <= 0:
+            raise RuntimeError("Invalid EXPOSURE_SAMPLE_ROWS: must be a positive integer")
 
         return cls(
             numerai_public_id=_required_env("NUMERAI_PUBLIC_ID"),
@@ -208,6 +213,8 @@ class InferenceRuntimeConfig:
             wandb_model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v52"),
             min_pred_std=min_pred_std,
             max_abs_exposure=max_abs_exposure,
+            exposure_sample_rows=exposure_sample_rows,
+            exposure_sample_seed=int(os.getenv("EXPOSURE_SAMPLE_SEED", "0")),
             allow_dataset_version_mismatch=_optional_bool_env("ALLOW_DATASET_VERSION_MISMATCH", default=False),
         )
 

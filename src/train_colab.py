@@ -900,7 +900,18 @@ def train() -> None:
     wf_report: WalkforwardReport | None = None
     blend_report: BlendTuneReport | None = None
     checkpoint_walkforward: dict[str, object] | None = None
-    checkpoint_postprocess: dict[str, object] | None = None
+    checkpoint_postprocess: dict[str, object] = {
+        "schema_version": 1,
+        "submission_transform": "rank_01",
+        "blend_alpha": 1.0,
+        "bench_neutralize_prop": 0.0,
+        "payout_weight_corr": float(cfg.payout_weight_corr),
+        "payout_weight_bmc": float(cfg.payout_weight_bmc),
+        "bench_cols_used": data.bench_cols,
+        "feature_neutralize_prop": 0.0,
+        "feature_neutralize_n_features": 0,
+        "feature_neutralize_seed": 0,
+    }
     recommended_iter: int | None = None
     if cfg.walkforward_enabled:
         wf_report = evaluate_walkforward(cfg, lgb_params, data)
@@ -923,13 +934,15 @@ def train() -> None:
         }
         checkpoint_postprocess = {
             "schema_version": 1,
+            "submission_transform": "rank_01",
             "blend_alpha": float(blend_report.best_alpha),
             "bench_neutralize_prop": float(blend_report.best_prop),
-            "payout_weights": {
-                "corr": float(cfg.payout_weight_corr),
-                "bmc": float(cfg.payout_weight_bmc),
-            },
+            "payout_weight_corr": float(cfg.payout_weight_corr),
+            "payout_weight_bmc": float(cfg.payout_weight_bmc),
             "bench_cols_used": data.bench_cols,
+            "feature_neutralize_prop": 0.0,
+            "feature_neutralize_n_features": 0,
+            "feature_neutralize_seed": 0,
         }
         logger.info(
             "phase=walkforward_completed recommended_num_iteration=%d mean_corr=%.6f std_corr=%.6f sharpe=%.6f hit_rate=%.6f",

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import wandb
 
-from numerai_metrics import bmc_mean_per_era, gauss_rank_by_era, mean_per_era_numerai_corr, neutralize_to_matrix
+from numerai_metrics import bmc_mean_per_era, mean_per_era_numerai_corr
+from postprocess import PostprocessConfig, apply_postprocess
 
 
 @dataclass(frozen=True)
@@ -27,13 +28,13 @@ def blended_predictions(
     alpha: float,
     neutralize_prop: float,
 ) -> np.ndarray:
-    pred_gauss = gauss_rank_by_era(pred_raw, era)
-    bench_gauss = np.empty_like(bench, dtype=np.float32)
-    for idx in range(bench.shape[1]):
-        bench_gauss[:, idx] = gauss_rank_by_era(bench[:, idx], era)
-    pred_resid = neutralize_to_matrix(pred_gauss, bench_gauss, proportion=neutralize_prop)
-    blended = alpha * pred_raw.astype(np.float32, copy=False) + (1.0 - alpha) * pred_resid
-    return blended.astype(np.float32, copy=False)
+    cfg = PostprocessConfig(
+        schema_version=1,
+        submission_transform="gauss_rank",
+        blend_alpha=float(alpha),
+        bench_neutralize_prop=float(neutralize_prop),
+    )
+    return apply_postprocess(pred_raw.astype(np.float32, copy=False), era, cfg, bench=bench)
 
 
 def tune_blend_on_windows(
