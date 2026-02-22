@@ -440,19 +440,31 @@ def load_train_valid_frames(
         cfg.numerai_data_dir,
         len(feature_cols),
     )
+    # Use int8 arrays when int8 parquet files are requested (4× smaller than float32).
+    feature_dtype = np.int8 if cfg.use_int8_parquet else np.float32
+    use_cache = cfg.load_mode == "cached"
+
     x_train, y_train, era_train, id_train = load_split_numpy(
-        train_path, feature_cols, cfg.id_col, cfg.era_col, cfg.target_col
+        train_path, feature_cols, cfg.id_col, cfg.era_col, cfg.target_col,
+        feature_dtype=feature_dtype, use_cache=use_cache,
     )
     x_valid, y_valid, era_valid, id_valid = load_split_numpy(
-        validation_path, feature_cols, cfg.id_col, cfg.era_col, cfg.target_col
+        validation_path, feature_cols, cfg.id_col, cfg.era_col, cfg.target_col,
+        feature_dtype=feature_dtype, use_cache=use_cache,
     )
-    logger.info("phase=frame_loaded split=train rows=%d cols=%d", x_train.shape[0], x_train.shape[1] + 3)
-    logger.info("phase=frame_loaded split=validation rows=%d cols=%d", x_valid.shape[0], x_valid.shape[1] + 3)
+    n_train = len(y_train)
+    logger.info("phase=frame_loaded split=train rows=%d cols=%d", n_train, len(feature_cols) + 3)
+    logger.info("phase=frame_loaded split=validation rows=%d cols=%d", len(y_valid), len(feature_cols) + 3)
 
+    # Concatenate then free the per-split arrays before sorting to avoid keeping
+    # three copies of the feature matrix in memory simultaneously.
     x_all = np.concatenate([x_train, x_valid], axis=0)
     y_all = np.concatenate([y_train, y_valid], axis=0)
     era_all = np.concatenate([era_train, era_valid], axis=0)
     id_all = np.concatenate([id_train, id_valid], axis=0)
+    del x_train, x_valid
+    gc.collect()
+
     era_all_int = era_to_int(era_all)
 
     order = np.argsort(era_all_int, kind="stable")
@@ -461,6 +473,18 @@ def load_train_valid_frames(
     era_all = era_all[order]
     era_all_int = era_all_int[order]
     id_all = id_all[order]
+
+    # Numerai train eras always precede validation eras, so after sorting by era
+    # the first n_train rows are training rows and the rest are validation rows.
+    # Use numpy views (no copy) to avoid a second allocation.
+    x_train = x_all[:n_train]
+    x_valid = x_all[n_train:]
+    y_train = y_all[:n_train]
+    y_valid = y_all[n_train:]
+    era_train = era_all[:n_train]
+    era_valid = era_all[n_train:]
+    id_train = id_all[:n_train]
+    id_valid = id_all[n_train:]
 
     bench_train_df = load_benchmark_frame(benchmark_paths["train"])
     bench_valid_df = load_benchmark_frame(benchmark_paths["validation"])
@@ -532,8 +556,8 @@ def _best_corr_iteration(
 
 
 def fit_lgbm(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: LoadedData, seed: int) -> FitResult:
-    dtrain = lgb.Dataset(data.x_train, label=data.y_train, feature_name=data.feature_cols)
-    dvalid = lgb.Dataset(data.x_valid, label=data.y_valid, reference=dtrain, feature_name=data.feature_cols)
+    dtrain = lgb.Dataset(data.x_train, label=data.y_train, feature_name=data.feature_cols, free_raw_data=True)
+    dvalid = lgb.Dataset(data.x_valid, label=data.y_valid, reference=dtrain, feature_name=data.feature_cols, free_raw_data=True)
 
     fit_params = dict(lgb_params)
     fit_params["seed"] = seed
@@ -623,7 +647,7 @@ def fit_lgbm_final(
     seed: int,
     num_boost_round: int,
 ) -> lgb.Booster:
-    dtrain = lgb.Dataset(x, label=y, feature_name=feature_cols)
+    dtrain = lgb.Dataset(x, label=y, feature_name=feature_cols, free_raw_data=True)
     params = dict(lgb_params)
     params["seed"] = seed
     return lgb.train(params=params, train_set=dtrain, num_boost_round=num_boost_round)
@@ -657,8 +681,9 @@ def evaluate_walkforward(cfg: TrainRuntimeConfig, lgb_params: dict[str, object],
         y_valid = data.y_all[valid_idx]
         era_valid = data.era_all[valid_idx]
 
-        dtrain = lgb.Dataset(x_train, label=y_train, feature_name=data.feature_cols)
-        dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain, feature_name=data.feature_cols)
+        dtrain = lgb.Dataset(x_train, label=y_train, feature_name=data.feature_cols, free_raw_data=True)
+        dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain, feature_name=data.feature_cols, free_raw_data=True)
+        del x_train
 
         fit_params = dict(lgb_params)
         fit_params["seed"] = tune_seed
@@ -693,6 +718,7 @@ def evaluate_walkforward(cfg: TrainRuntimeConfig, lgb_params: dict[str, object],
                     lgb.record_evaluation(evals_result),
                 ],
             )
+        del dtrain, dvalid
 
         corr_scan_iters = _corr_scan_iterations(cfg, int(model.current_iteration()))
         best_corr, best_iter, _ = _best_corr_iteration(
@@ -704,6 +730,8 @@ def evaluate_walkforward(cfg: TrainRuntimeConfig, lgb_params: dict[str, object],
         )
         preds = model.predict(x_valid, num_iteration=best_iter)
         corr_mean_per_era = float(mean_per_era_numerai_corr(preds, y_valid, era_valid))
+        del x_valid, model
+        gc.collect()
 
         row = {
             "window_id": int(window.window_id),
@@ -808,8 +836,9 @@ def _collect_blend_windows(
 
         fit_params = dict(lgb_params)
         fit_params["seed"] = tune_seed
-        dtrain = lgb.Dataset(x_train, label=y_train, feature_name=data.feature_cols)
-        dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain, feature_name=data.feature_cols)
+        dtrain = lgb.Dataset(x_train, label=y_train, feature_name=data.feature_cols, free_raw_data=True)
+        dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain, feature_name=data.feature_cols, free_raw_data=True)
+        del x_train
         try:
             model = lgb.train(
                 params=fit_params,
@@ -832,6 +861,8 @@ def _collect_blend_windows(
                 valid_names=["train", "valid"],
                 callbacks=[lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)],
             )
+        del dtrain, dvalid
+        gc.collect()
         best_iter = min(int(row["best_iter"]), int(model.current_iteration()))
         if best_iter != int(row["best_iter"]):
             logger.warning(
@@ -841,6 +872,8 @@ def _collect_blend_windows(
                 int(model.current_iteration()),
             )
         pred_raw = model.predict(x_valid, num_iteration=best_iter).astype(np.float32, copy=False)
+        del x_valid, model
+        gc.collect()
         rows.append(
             {
                 "window_id": int(row["window_id"]),

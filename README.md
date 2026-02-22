@@ -4,7 +4,8 @@ This repository implements a **remote-train / auto-submit** pipeline:
 
 - **Training engine (Colab Pro, 51GB RAM)**: `src/train_colab.py`
   - Uses `NumerAPI` (official NumerAI flow) to download train/validation/features datasets.
-  - Uses Polars + float downcasting for efficient loading.
+  - Prefers int8 parquet variants by default (`USE_INT8_PARQUET=true`) for a 4× feature-array size reduction.
+  - Uses Polars with column projection for memory-efficient loading; supports `LOAD_MODE=cached` to persist pre-processed numpy arrays and skip re-processing on session restart.
   - Trains LightGBM with per-seed checkpoint/resume and logs candidate model artifacts to W&B (`latest`, `candidate`).
 - **Inference agent (GitHub Actions)**: `src/inference.py`
   - Pulls the `prod` model artifact from W&B.
@@ -108,9 +109,9 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `MAX_FEATURES_PER_MODEL` | `src/train_colab.py` | `1200` | Deterministic per-seed feature cap for large feature pools (`<=0` disables sampling). |
 | `FEATURE_SAMPLING_STRATEGY` | `src/train_colab.py` | `sharded_shuffle` | Feature subset strategy used across ensemble members. |
 | `FEATURE_SAMPLING_MASTER_SEED` | `src/train_colab.py` | `0` | Master seed for deterministic sharded feature assignment across models. |
-| `USE_INT8_PARQUET` | `src/train_colab.py`, `src/inference.py` | `false` | Prefer Numerai int8 parquet variants when available, with automatic fallback to float parquet. |
+| `USE_INT8_PARQUET` | `src/train_colab.py`, `src/inference.py` | `true` | Prefer Numerai int8 parquet variants when available (features stored as integers 0–4, 4× smaller than float32), with automatic fallback to float parquet. |
 | `LOAD_BACKEND` | `src/train_colab.py` | `polars` | Dataset loading backend selector (currently `polars`). |
-| `LOAD_MODE` | `src/train_colab.py` | `in_memory` | Dataset loading mode selector (currently `in_memory`). |
+| `LOAD_MODE` | `src/train_colab.py` | `in_memory` | Dataset loading mode. Set to `cached` to save pre-processed numpy arrays next to the parquet files and skip re-processing on session restart. |
 | `LGBM_NUM_LEAVES` | `src/train_colab.py` | `128` | LightGBM leaves for CPU-focused Numerai baseline. |
 | `LGBM_MIN_DATA_IN_LEAF` | `src/train_colab.py` | `1000` | LightGBM minimum data in leaf for regularization on large tabular training sets. |
 | `LGBM_FEATURE_FRACTION` | `src/train_colab.py` | `0.7` | Column subsampling fraction per tree. |
@@ -129,6 +130,16 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `BENCH_NEUTRALIZE_PROP_GRID` | `src/train_colab.py` | `0.0,0.25,0.5,0.75,1.0` | Comma-separated benchmark neutralization strengths searched during blend tuning. |
 | `BLEND_TUNE_SEED` | `src/train_colab.py` | `WALKFORWARD_TUNE_SEED` | Seed used for blend tuning over walk-forward windows. |
 | `BLEND_USE_WINDOWS` | `src/train_colab.py` | `WALKFORWARD_MAX_WINDOWS` | Number of most recent walk-forward windows used for PR3 blend tuning. |
+| `WALKFORWARD_ENABLED` | `src/train_colab.py` | `true` | Enable walk-forward cross-validation to estimate number of boosting rounds before final training. |
+| `WALKFORWARD_CHUNK_SIZE` | `src/train_colab.py` | `156` | Number of eras per walk-forward fold (train + validation). |
+| `WALKFORWARD_PURGE_ERAS` | `src/train_colab.py` | `8` | Number of eras to gap between train and validation in each walk-forward window to reduce leakage. |
+| `WALKFORWARD_MAX_WINDOWS` | `src/train_colab.py` | `4` | Maximum number of most-recent walk-forward windows to use (older windows are dropped). |
+| `WALKFORWARD_TUNE_SEED` | `src/train_colab.py` | first of `LGBM_SEEDS` | Seed (must be in `LGBM_SEEDS`) used for the walk-forward tuning model and blend tuning. |
+| `WALKFORWARD_LOG_MODELS` | `src/train_colab.py` | `false` | Log intermediate walk-forward models to W&B (increases artifact size). |
+| `TRAIN_DRY_RUN` | `src/train_colab.py` | `false` | Run a fast smoke-test with synthetic data without W&B login or real datasets; prints `TRAIN_DRY_RUN_OK` on success. |
+| `INFER_DRY_RUN` | `src/inference.py` | `false` | Run inference pipeline against cached artifacts without submitting to NumerAI; prints `INFER_DRY_RUN_OK` on success. |
+| `EXPOSURE_SAMPLE_ROWS` | `src/inference.py` | `200000` | Number of rows to sample for feature exposure drift-guard check. |
+| `EXPOSURE_SAMPLE_SEED` | `src/inference.py` | `0` | Random seed for the exposure sampling step. |
 | `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v5.2` | Override NumerAI dataset version for live data. |
 | `ALLOW_DATASET_VERSION_MISMATCH` | `src/inference.py` | `false` | Explicitly allow inference with manifest/runtime dataset-version mismatch (not recommended). |
 | `ALLOW_FEATURES_BY_MODEL_MISSING` | `src/inference.py` | `false` | Allow legacy artifacts without `features_by_model.json` (otherwise inference hard-fails). |

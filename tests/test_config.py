@@ -29,6 +29,16 @@ class TrainRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(cfg.feature_sampling_strategy, "sharded_shuffle")
         self.assertEqual(cfg.feature_sampling_master_seed, 0)
 
+    def test_use_int8_parquet_defaults_to_true(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key"}, clear=True):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertTrue(cfg.use_int8_parquet)
+
+    def test_use_int8_parquet_can_be_disabled(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key", "USE_INT8_PARQUET": "false"}, clear=True):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertFalse(cfg.use_int8_parquet)
+
 
 class InferenceRuntimeConfigTests(unittest.TestCase):
     def test_allow_features_by_model_missing_default_false(self) -> None:
