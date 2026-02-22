@@ -151,4 +151,4 @@ def _optional_bool_env(name: str, default: bool) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise RuntimeError(f"Invalid {name} value {value!r}: expected one of true/false, yes/no, 1/0.")
+    raise RuntimeError(f"Invalid {name} value {value!r}: expected one of true/false, yes/no, on/off, 1/0.")

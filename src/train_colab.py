@@ -210,7 +210,29 @@ def _load_training_checkpoint(
     members = payload.get("members")
     if not isinstance(members, list):
         raise RuntimeError(f"Invalid checkpoint payload at {checkpoint_path}: expected 'members' list.")
-    return members
+
+    normalized_members: list[dict[str, object]] = []
+    for member in members:
+        if not isinstance(member, dict):
+            raise RuntimeError(f"Invalid checkpoint member in {checkpoint_path}: expected object, got {type(member)!r}.")
+        try:
+            seed = int(member["seed"])
+            model_file = str(member["model_file"])
+            best_iteration = int(member["best_iteration"])
+            best_valid_rmse = float(member["best_valid_rmse"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid checkpoint member schema in {checkpoint_path}: {member!r}") from exc
+        if not model_file:
+            raise RuntimeError(f"Invalid checkpoint member model_file in {checkpoint_path}: {member!r}")
+        normalized_members.append(
+            {
+                "seed": seed,
+                "model_file": model_file,
+                "best_iteration": best_iteration,
+                "best_valid_rmse": best_valid_rmse,
+            }
+        )
+    return normalized_members
 
 
 def _log_seed_observability(result: FitResult) -> None:
