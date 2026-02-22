@@ -11,7 +11,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class TrainRuntimeConfig:
     dataset_version: str = "v5.2"
-    feature_set_name: str = "medium"
+    feature_set_name: str = "largest"
     target_col: str = "target"
     era_col: str = "era"
     id_col: str = "id"
@@ -124,7 +124,7 @@ class TrainRuntimeConfig:
 
         return cls(
             dataset_version=dataset_version,
-            feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "medium"),
+            feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "largest"),
             id_col=os.getenv("NUMERAI_ID_COL", "id").strip() or "id",
             model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v52"),
             wandb_project=os.getenv("WANDB_PROJECT", "numerai-mlops"),
