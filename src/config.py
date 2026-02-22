@@ -16,14 +16,21 @@ class TrainRuntimeConfig:
     era_col: str = "era"
     model_name: str = "lgbm_numerai_v52"
     num_boost_round: int = 5000
-    early_stopping_rounds: int = 250
+    early_stopping_rounds: int = 300
     wandb_project: str = "numerai-mlops"
     wandb_entity: str | None = None
     wandb_api_key: str = ""
     numerai_public_id: str | None = None
     numerai_secret_key: str | None = None
     numerai_data_dir: Path = Path("/content/numerai_data")
-    lgbm_device: str = "gpu"
+    lgbm_device: str = "cpu"
+    lgbm_learning_rate: float = 0.02
+    lgbm_num_leaves: int = 128
+    lgbm_feature_fraction: float = 0.7
+    lgbm_bagging_fraction: float = 0.8
+    lgbm_bagging_freq: int = 1
+    lgbm_min_data_in_leaf: int = 1000
+    lgbm_seeds: tuple[int, ...] = (42, 1337, 2026)
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -34,20 +41,30 @@ class TrainRuntimeConfig:
                 "Please set it before running training to enable Weights & Biases logging."
             )
 
-        lgbm_device = os.getenv("LGBM_DEVICE", "gpu").strip().lower() or "gpu"
+        lgbm_device = os.getenv("LGBM_DEVICE", "cpu").strip().lower() or "cpu"
         if lgbm_device not in {"gpu", "cpu"}:
             raise ValueError("Invalid LGBM_DEVICE. Expected one of: gpu, cpu.")
+
         numerai_public_id = os.getenv("NUMERAI_PUBLIC_ID", "").strip() or None
         numerai_secret_key = os.getenv("NUMERAI_SECRET_KEY", "").strip() or None
         if bool(numerai_public_id) != bool(numerai_secret_key):
             raise RuntimeError(
                 "NUMERAI_PUBLIC_ID and NUMERAI_SECRET_KEY must be set together for authenticated training downloads."
             )
+
         dataset_version = os.getenv("NUMERAI_DATASET_VERSION", "v5.2").strip() or "v5.2"
         if not re.fullmatch(r"[A-Za-z0-9._-]+", dataset_version):
             raise ValueError("Invalid NUMERAI_DATASET_VERSION. Use only letters, numbers, dot, underscore, or hyphen.")
         if ".." in dataset_version or dataset_version.startswith((".", "-")):
             raise ValueError("Invalid NUMERAI_DATASET_VERSION.")
+
+        seeds_str = os.getenv("LGBM_SEEDS", "42,1337,2026").strip()
+        try:
+            lgbm_seeds = tuple(int(seed.strip()) for seed in seeds_str.split(",") if seed.strip())
+        except ValueError as exc:
+            raise ValueError("Invalid LGBM_SEEDS. Expected comma-separated integers.") from exc
+        if not lgbm_seeds:
+            raise ValueError("Invalid LGBM_SEEDS. Provide at least one integer seed.")
 
         return cls(
             dataset_version=dataset_version,
@@ -60,6 +77,15 @@ class TrainRuntimeConfig:
             numerai_secret_key=numerai_secret_key,
             numerai_data_dir=Path(os.getenv("NUMERAI_DATA_DIR", "/content/numerai_data")),
             lgbm_device=lgbm_device,
+            num_boost_round=int(os.getenv("LGBM_NUM_BOOST_ROUND", "5000")),
+            early_stopping_rounds=int(os.getenv("LGBM_EARLY_STOPPING_ROUNDS", "300")),
+            lgbm_learning_rate=float(os.getenv("LGBM_LEARNING_RATE", "0.02")),
+            lgbm_num_leaves=int(os.getenv("LGBM_NUM_LEAVES", "128")),
+            lgbm_feature_fraction=float(os.getenv("LGBM_FEATURE_FRACTION", "0.7")),
+            lgbm_bagging_fraction=float(os.getenv("LGBM_BAGGING_FRACTION", "0.8")),
+            lgbm_bagging_freq=int(os.getenv("LGBM_BAGGING_FREQ", "1")),
+            lgbm_min_data_in_leaf=int(os.getenv("LGBM_MIN_DATA_IN_LEAF", "1000")),
+            lgbm_seeds=lgbm_seeds,
         )
 
 

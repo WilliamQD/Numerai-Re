@@ -18,7 +18,7 @@ from config import InferenceRuntimeConfig
 
 FEATURES_FILENAME = "features.json"
 MANIFEST_FILENAME = "train_manifest.json"
-REQUIRED_MANIFEST_KEYS = ("model_file", "dataset_version", "feature_set")
+REQUIRED_MANIFEST_KEYS = ("dataset_version", "feature_set")
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 
@@ -29,49 +29,38 @@ class DriftGuardError(RuntimeError):
     """Raised when quality gates fail and submission must abort safely."""
 
 
-def _resolve_manifest(manifest_path: Path, model_name: str) -> tuple[dict, str]:
+def _resolve_manifest(manifest_path: Path, model_name: str) -> tuple[dict, list[str]]:
+    default_file = [f"{model_name}.txt"]
     if not manifest_path.exists():
-        logger.warning(
-            "Manifest file '%s' is missing. Falling back to default model filename.",
-            MANIFEST_FILENAME,
-        )
-        return {}, f"{model_name}.txt"
+        logger.warning("Manifest file '%s' is missing. Falling back to default model filename.", MANIFEST_FILENAME)
+        return {}, default_file
 
     try:
         manifest = json.loads(manifest_path.read_text())
     except json.JSONDecodeError:
-        logger.warning(
-            "Manifest file '%s' is malformed JSON. Falling back to default model filename.",
-            MANIFEST_FILENAME,
-        )
-        return {}, f"{model_name}.txt"
+        logger.warning("Manifest file '%s' is malformed JSON. Falling back to default model filename.", MANIFEST_FILENAME)
+        return {}, default_file
     if not isinstance(manifest, dict):
-        logger.warning(
-            "Manifest file '%s' is not a JSON object. Falling back to default model filename.",
-            MANIFEST_FILENAME,
-        )
-        return {}, f"{model_name}.txt"
+        logger.warning("Manifest file '%s' is not a JSON object. Falling back to default model filename.", MANIFEST_FILENAME)
+        return {}, default_file
 
     missing_keys = [key for key in REQUIRED_MANIFEST_KEYS if key not in manifest]
     if missing_keys:
-        logger.warning(
-            "Manifest file '%s' is missing required keys %s. Falling back to default model filename.",
-            MANIFEST_FILENAME,
-            missing_keys,
-        )
-        return manifest, f"{model_name}.txt"
+        logger.warning("Manifest file '%s' missing keys %s.", MANIFEST_FILENAME, missing_keys)
+
+    model_files = manifest.get("model_files")
+    if isinstance(model_files, list) and model_files and all(isinstance(f, str) and f.strip() for f in model_files):
+        return manifest, model_files
 
     model_filename = manifest.get("model_file")
-    if not isinstance(model_filename, str) or not model_filename.strip():
-        logger.warning(
-            "Manifest key 'model_file' is invalid. Falling back to default model filename.",
-        )
-        return manifest, f"{model_name}.txt"
+    if isinstance(model_filename, str) and model_filename.strip():
+        return manifest, [model_filename]
 
-    return manifest, model_filename
+    logger.warning("Manifest model filename keys are invalid. Falling back to default model filename.")
+    return manifest, default_file
 
 
-def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[lgb.Booster, list[str], dict]:
+def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[list[lgb.Booster], list[str], dict]:
     ref = f"{cfg.wandb_entity}/{cfg.wandb_project}/{cfg.wandb_model_name}:prod"
 
     api = wandb.Api()
@@ -80,34 +69,31 @@ def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[lgb.Booster, list[str]
 
     features_path = root / FEATURES_FILENAME
     manifest_path = root / MANIFEST_FILENAME
-    manifest, model_filename = _resolve_manifest(manifest_path, cfg.wandb_model_name)
-    model_path = root / model_filename
+    manifest, model_filenames = _resolve_manifest(manifest_path, cfg.wandb_model_name)
 
-    if not model_path.exists() or not features_path.exists():
-        raise RuntimeError(
-            f"Model artifact is missing required files. "
-            f"Expected model file '{model_filename}' and '{FEATURES_FILENAME}'."
-        )
+    if not features_path.exists():
+        raise RuntimeError(f"Model artifact is missing required file '{FEATURES_FILENAME}'.")
+
+    missing_models = [name for name in model_filenames if not (root / name).exists()]
+    if missing_models:
+        raise RuntimeError(f"Model artifact is missing model files: {missing_models}")
 
     feature_cols = json.loads(features_path.read_text())
-    if not isinstance(feature_cols, list) or not feature_cols or not all(
-        isinstance(col, str) and col for col in feature_cols
-    ):
-        raise RuntimeError(
-            f"Invalid '{FEATURES_FILENAME}' in model artifact: expected a non-empty list of feature names."
-        )
-    model = lgb.Booster(model_file=str(model_path))
+    if not isinstance(feature_cols, list) or not feature_cols or not all(isinstance(col, str) and col for col in feature_cols):
+        raise RuntimeError(f"Invalid '{FEATURES_FILENAME}' in model artifact: expected non-empty list of features.")
+
+    models = [lgb.Booster(model_file=str(root / model_filename)) for model_filename in model_filenames]
     logger.info(
-        "phase=artifact_downloaded artifact_ref=%s selected_dataset_version=%s n_features=%d",
+        "phase=artifact_downloaded artifact_ref=%s selected_dataset_version=%s n_features=%d n_models=%d",
         ref,
         manifest.get("dataset_version", "unknown"),
         len(feature_cols),
+        len(models),
     )
-    return model, feature_cols, manifest
+    return models, feature_cols, manifest
 
 
 def apply_quality_gates(features_df: pd.DataFrame, preds: np.ndarray, cfg: InferenceRuntimeConfig) -> None:
-    """Abort inference when prediction quality or risk limits are violated."""
     if np.isnan(preds).any() or np.isinf(preds).any():
         raise DriftGuardError("Predictions contain NaN/Inf")
     if np.allclose(preds, 0.0):
@@ -142,7 +128,7 @@ def main() -> int:
     napi.download_dataset(f"{cfg.dataset_version}/live.parquet", str(live_path))
     logger.info("phase=datasets_downloaded dataset_version=%s live_path=%s", cfg.dataset_version, live_path)
 
-    model, feature_cols, manifest = load_prod_model(cfg)
+    models, feature_cols, manifest = load_prod_model(cfg)
 
     live_df = pd.read_parquet(live_path)
     logger.info(
@@ -157,7 +143,8 @@ def main() -> int:
         raise DriftGuardError(f"Live data missing required features: {missing[:10]}")
 
     x_live = live_df[feature_cols]
-    preds = model.predict(x_live).astype(np.float32)
+    model_preds = [model.predict(x_live).astype(np.float32) for model in models]
+    preds = np.mean(np.vstack(model_preds), axis=0, dtype=np.float32)
     apply_quality_gates(x_live, preds, cfg)
 
     if "id" in live_df.columns:
@@ -166,25 +153,28 @@ def main() -> int:
         live_id = live_df.index
     else:
         raise DriftGuardError("Live data is missing required 'id' (expected as column or index).")
+
     submission = pd.DataFrame({"id": live_id, "prediction": preds})
     submission_path = Path("submission.csv")
     submission.to_csv(submission_path, index=False)
 
-    models = napi.get_models()
-    if cfg.numerai_model_name not in models:
-        available = ", ".join(sorted(models.keys()))
+    models_dict = napi.get_models()
+    if cfg.numerai_model_name not in models_dict:
+        available = ", ".join(sorted(models_dict.keys()))
         raise RuntimeError(
             f"Configured NUMERAI_MODEL_NAME '{cfg.numerai_model_name}' not found among Numerai models. "
             f"Available models: {available or 'none'}"
         )
-    model_id = models[cfg.numerai_model_name]
+
+    model_id = models_dict[cfg.numerai_model_name]
     submission_id = napi.upload_predictions(str(submission_path), model_id=model_id)
 
     logger.info(
-        "phase=prediction_submitted submission_path=%s rows=%d model_id=%s",
+        "phase=prediction_submitted submission_path=%s rows=%d model_id=%s ensemble_models=%d",
         submission_path,
         len(submission),
         model_id,
+        len(models),
     )
     print(f"submission_id={submission_id}")
     if manifest:
