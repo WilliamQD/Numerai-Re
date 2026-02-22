@@ -93,8 +93,8 @@ def _resolve_lgb_params(cfg: TrainRuntimeConfig) -> dict[str, object]:
 
 def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Path, Path, Path]:
     """Download train/validation/features files, matching official example flow."""
-    data_dir = data_dir / cfg.dataset_version
-    data_dir.mkdir(parents=True, exist_ok=True)
+    version_data_dir = data_dir / cfg.dataset_version
+    version_data_dir.mkdir(parents=True, exist_ok=True)
     numerapi_kwargs: dict[str, str] = {}
     if cfg.numerai_public_id and cfg.numerai_secret_key:
         numerapi_kwargs = {
@@ -103,9 +103,9 @@ def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Pa
         }
     napi = NumerAPI(**numerapi_kwargs)
 
-    train_path = data_dir / "train.parquet"
-    validation_path = data_dir / "validation.parquet"
-    features_path = data_dir / FEATURES_FILENAME
+    train_path = version_data_dir / "train.parquet"
+    validation_path = version_data_dir / "validation.parquet"
+    features_path = version_data_dir / FEATURES_FILENAME
 
     required_files = (
         (f"{cfg.dataset_version}/train.parquet", train_path),

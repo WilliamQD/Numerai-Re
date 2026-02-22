@@ -7,6 +7,8 @@ REPO_DIR="${REPO_DIR:-/content/Numerai-Re}"
 PERSISTENT_ROOT="${PERSISTENT_ROOT:-/content/drive/MyDrive/Numerai-Re}"
 DEFAULT_NUMERAI_DATA_DIR="${DEFAULT_NUMERAI_DATA_DIR:-${PERSISTENT_ROOT}/datasets/numerai}"
 ALLOW_UNPINNED_REF="${ALLOW_UNPINNED_REF:-0}"
+export PERSISTENT_ROOT
+export DEFAULT_NUMERAI_DATA_DIR
 
 canon_url() {
   local url="${1%.git}"
