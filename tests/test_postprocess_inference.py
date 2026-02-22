@@ -12,7 +12,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from config import InferenceRuntimeConfig
-from inference import DriftGuardError, _download_live_benchmark_dataset, apply_quality_gates
+from inference import RANK_01_EPSILON, DriftGuardError, _download_live_benchmark_dataset, apply_quality_gates
 from postprocess import PostprocessConfig, apply_postprocess
 
 
@@ -71,11 +71,20 @@ class PostprocessInferenceTests(unittest.TestCase):
             numerai_model_name="m",
             wandb_entity="e",
             wandb_project="p",
+            max_abs_exposure=1.0,
             exposure_sample_rows=2,
         )
         features = pd.DataFrame({"f1": [1.0, 2.0, 3.0], "f2": [2.0, 1.0, 4.0]})
         with self.assertRaises(DriftGuardError):
             apply_quality_gates(features, np.array([0.0, 0.3, 0.7], dtype=np.float32), cfg, "rank_01")
+        with self.assertRaises(DriftGuardError):
+            apply_quality_gates(features, np.array([0.2, 0.3, 1.0], dtype=np.float32), cfg, "rank_01")
+        apply_quality_gates(
+            features,
+            np.array([RANK_01_EPSILON, 0.3, 1.0 - RANK_01_EPSILON], dtype=np.float32),
+            cfg,
+            "rank_01",
+        )
 
     def test_download_live_benchmark_dataset_discovers_expected_name(self) -> None:
         napi = _FakeNumerAPI(["v5.2/live.parquet", "v5.2/live_benchmark_models.parquet"])

@@ -22,6 +22,7 @@ MANIFEST_FILENAME = "train_manifest.json"
 POSTPROCESS_FILENAME = "postprocess_config.json"
 REQUIRED_MANIFEST_KEYS = ("dataset_version", "feature_set")
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+RANK_01_EPSILON = 1e-6
 
 
 logger = logging.getLogger(__name__)
@@ -127,21 +128,22 @@ def apply_quality_gates(
     if np.allclose(preds, 0.0):
         raise DriftGuardError("Predictions are all zero")
     if submission_transform == "rank_01":
-        eps = 1e-6
-        if (preds <= eps).any() or (preds >= 1.0 - eps).any():
+        if (preds < RANK_01_EPSILON).any() or (preds > 1.0 - RANK_01_EPSILON).any():
             raise DriftGuardError("Postprocessed rank_01 predictions must lie strictly in (0,1).")
 
     pred_std = float(np.std(preds))
     if pred_std < cfg.min_pred_std:
         raise DriftGuardError(f"Prediction std ({pred_std:.8f}) below threshold {cfg.min_pred_std}")
 
+    sampled_features = features_df
+    sampled_preds = preds
     if len(features_df) > cfg.exposure_sample_rows:
         rng = np.random.default_rng(cfg.exposure_sample_seed)
         sampled_idx = np.sort(rng.choice(len(features_df), size=cfg.exposure_sample_rows, replace=False))
-        features_df = features_df.iloc[sampled_idx]
-        preds = preds[sampled_idx]
+        sampled_features = features_df.iloc[sampled_idx]
+        sampled_preds = preds[sampled_idx]
 
-    exposures = features_df.corrwith(pd.Series(preds, index=features_df.index)).abs()
+    exposures = sampled_features.corrwith(pd.Series(sampled_preds, index=sampled_features.index)).abs()
     feature_exposure = float(exposures.max(skipna=True))
     if np.isnan(feature_exposure):
         raise DriftGuardError("Feature exposure could not be computed (NaN).")
