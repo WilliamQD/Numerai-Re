@@ -456,35 +456,13 @@ def load_train_valid_frames(
     logger.info("phase=frame_loaded split=train rows=%d cols=%d", n_train, len(feature_cols) + 3)
     logger.info("phase=frame_loaded split=validation rows=%d cols=%d", len(y_valid), len(feature_cols) + 3)
 
-    # Concatenate then free the per-split arrays before sorting to avoid keeping
-    # three copies of the feature matrix in memory simultaneously.
+    # Concatenate once for walk-forward logic while preserving the original
+    # train/validation split arrays to avoid an expensive full-matrix re-sort.
     x_all = np.concatenate([x_train, x_valid], axis=0)
     y_all = np.concatenate([y_train, y_valid], axis=0)
     era_all = np.concatenate([era_train, era_valid], axis=0)
     id_all = np.concatenate([id_train, id_valid], axis=0)
-    del x_train, x_valid
-    gc.collect()
-
     era_all_int = era_to_int(era_all)
-
-    order = np.argsort(era_all_int, kind="stable")
-    x_all = x_all[order]
-    y_all = y_all[order]
-    era_all = era_all[order]
-    era_all_int = era_all_int[order]
-    id_all = id_all[order]
-
-    # Numerai train eras always precede validation eras, so after sorting by era
-    # the first n_train rows are training rows and the rest are validation rows.
-    # Use numpy views (no copy) to avoid a second allocation.
-    x_train = x_all[:n_train]
-    x_valid = x_all[n_train:]
-    y_train = y_all[:n_train]
-    y_valid = y_all[n_train:]
-    era_train = era_all[:n_train]
-    era_valid = era_all[n_train:]
-    id_train = id_all[:n_train]
-    id_valid = id_all[n_train:]
 
     bench_train_df = load_benchmark_frame(benchmark_paths["train"])
     bench_valid_df = load_benchmark_frame(benchmark_paths["validation"])
