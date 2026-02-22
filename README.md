@@ -99,7 +99,7 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `PERSISTENT_ROOT` | `notebooks/train_colab.ipynb`, `scripts/colab_bootstrap.sh` | `/content/drive/MyDrive/Numerai-Re` | Persistent root inside Google Drive used by Colab setup for cached data. |
 | `NUMERAI_PUBLIC_ID` | `src/train_colab.py` | unset | Optional NumerAI public ID for authenticated training dataset downloads (public dataset download also works without it). |
 | `NUMERAI_SECRET_KEY` | `src/train_colab.py` | unset | Optional NumerAI secret key paired with `NUMERAI_PUBLIC_ID` for authenticated training dataset downloads. |
-| `NUMERAI_FEATURE_SET` | `src/train_colab.py` | `largest` | Select feature set from NumerAI `features.json` (`largest` auto-selects the set with most features). |
+| `NUMERAI_FEATURE_SET` | `src/train_colab.py` | `all` | Select feature set from NumerAI `features.json` (`small`, `medium`, or `all`). |
 | `WANDB_MODEL_NAME` | `src/train_colab.py`, `src/inference.py` | `lgbm_numerai_v52` | Override model artifact name for logging/loading. |
 | `WANDB_PROJECT` | `src/train_colab.py` | `numerai-mlops` | Override W&B project for training logs. |
 | `WANDB_ENTITY` | `src/train_colab.py` | unset | Optional W&B entity override for training run ownership. |

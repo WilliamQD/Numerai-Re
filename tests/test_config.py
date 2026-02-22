@@ -8,10 +8,10 @@ from src.config import TrainRuntimeConfig
 
 
 class TrainRuntimeConfigTests(unittest.TestCase):
-    def test_feature_set_defaults_to_largest(self) -> None:
+    def test_feature_set_defaults_to_all(self) -> None:
         with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key"}, clear=True):
             cfg = TrainRuntimeConfig.from_env()
-        self.assertEqual(cfg.feature_set_name, "largest")
+        self.assertEqual(cfg.feature_set_name, "all")
 
     def test_feature_set_env_override_is_respected(self) -> None:
         with patch.dict(
