@@ -50,7 +50,7 @@ class TrainRuntimeConfig:
     max_features_per_model: int = 1200
     feature_sampling_strategy: str = "sharded_shuffle"
     feature_sampling_master_seed: int = 0
-    use_int8_parquet: bool = False
+    use_int8_parquet: bool = True
     load_backend: str = "polars"
     load_mode: str = "in_memory"
 
@@ -174,7 +174,7 @@ class TrainRuntimeConfig:
             feature_sampling_strategy=os.getenv("FEATURE_SAMPLING_STRATEGY", "sharded_shuffle").strip()
             or "sharded_shuffle",
             feature_sampling_master_seed=int(os.getenv("FEATURE_SAMPLING_MASTER_SEED", "0")),
-            use_int8_parquet=_optional_bool_env("USE_INT8_PARQUET", default=False),
+            use_int8_parquet=_optional_bool_env("USE_INT8_PARQUET", default=True),
             load_backend=os.getenv("LOAD_BACKEND", "polars").strip().lower() or "polars",
             load_mode=os.getenv("LOAD_MODE", "in_memory").strip().lower() or "in_memory",
         )
