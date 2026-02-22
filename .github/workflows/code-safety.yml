@@ -1,0 +1,31 @@
+name: Code Safety Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install lint tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff==0.9.10
+
+      - name: Python compile checks
+        run: python -m py_compile src/train_colab.py src/inference.py src/config.py src/promote_model.py
+
+      - name: Ruff lint
+        run: ruff check src

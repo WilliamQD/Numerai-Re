@@ -100,6 +100,7 @@ class InferenceRuntimeConfig:
     wandb_model_name: str = "lgbm_numerai_v52"
     min_pred_std: float = 1e-6
     max_abs_exposure: float = 0.30
+    allow_dataset_version_mismatch: bool = False
 
     @classmethod
     def from_env(cls) -> "InferenceRuntimeConfig":
@@ -129,6 +130,7 @@ class InferenceRuntimeConfig:
             wandb_model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v52"),
             min_pred_std=min_pred_std,
             max_abs_exposure=max_abs_exposure,
+            allow_dataset_version_mismatch=_optional_bool_env("ALLOW_DATASET_VERSION_MISMATCH", default=False),
         )
 
 
@@ -137,3 +139,16 @@ def _required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def _optional_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"Invalid {name} value {value!r}: expected one of true/false, yes/no, 1/0.")

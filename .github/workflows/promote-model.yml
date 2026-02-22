@@ -1,0 +1,47 @@
+name: Promote Candidate Model
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_alias:
+        description: Source alias to promote
+        required: false
+        default: candidate
+      prod_alias:
+        description: Target production alias
+        required: false
+        default: prod
+      dataset_version:
+        description: Expected dataset version in model manifest (optional)
+        required: false
+        default: v5.2
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-infer.txt
+
+      - name: Promote candidate artifact
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
+          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
+          WANDB_MODEL_NAME: ${{ vars.WANDB_MODEL_NAME || 'lgbm_numerai_v52' }}
+          WANDB_CANDIDATE_ALIAS: ${{ inputs.candidate_alias }}
+          WANDB_PROD_ALIAS: ${{ inputs.prod_alias }}
+          NUMERAI_DATASET_VERSION: ${{ inputs.dataset_version }}
+        run: python src/promote_model.py
