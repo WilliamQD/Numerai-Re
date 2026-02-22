@@ -20,16 +20,19 @@ import polars as pl
 import wandb
 from numerapi import NumerAPI
 
+from bench_matrix_builder import align_bench_to_ids
+from benchmarks import download_benchmark_parquets, load_benchmark_frame
 from config import TrainRuntimeConfig
 from era_utils import era_to_int
 from numerai_metrics import mean_per_era_numerai_corr
+from tune_blend import BlendTuneReport, tune_blend_on_windows
 from walkforward import build_windows
 
 
 FEATURES_FILENAME = "features.json"
 MANIFEST_FILENAME = "train_manifest.json"
 CHECKPOINT_FILENAME = "training_checkpoint.json"
-ARTIFACT_SCHEMA_VERSION = 2
+ARTIFACT_SCHEMA_VERSION = 3
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 
@@ -42,13 +45,20 @@ class LoadedData:
     x_train: Any
     y_train: np.ndarray
     era_train: np.ndarray
+    id_train: np.ndarray
+    bench_train: np.ndarray
     x_valid: Any
     y_valid: np.ndarray
     era_valid: np.ndarray
+    id_valid: np.ndarray
+    bench_valid: np.ndarray
     x_all: Any
     y_all: np.ndarray
     era_all: np.ndarray
     era_all_int: np.ndarray
+    id_all: np.ndarray
+    bench_all: np.ndarray
+    bench_cols: list[str]
 
 
 @dataclass(frozen=True)
@@ -116,7 +126,7 @@ def _resolve_lgb_params(cfg: TrainRuntimeConfig) -> dict[str, object]:
     return params
 
 
-def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Path, Path, Path]:
+def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Path, Path, Path, dict[str, Path]]:
     version_data_dir = data_dir / cfg.dataset_version
     version_data_dir.mkdir(parents=True, exist_ok=True)
     numerapi_kwargs: dict[str, str] = {}
@@ -143,7 +153,8 @@ def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Pa
         logger.info("phase=dataset_downloading dataset=%s path=%s", dataset_path, local_path)
         napi.download_dataset(dataset_path, str(local_path))
 
-    return train_path, validation_path, features_path
+    benchmark_paths = download_benchmark_parquets(napi, cfg.dataset_version, version_data_dir / "benchmarks")
+    return train_path, validation_path, features_path, benchmark_paths
 
 
 def _load_feature_list(features_path: Path, feature_set_name: str) -> list[str]:
@@ -191,6 +202,7 @@ def _write_training_checkpoint(
     lgb_params: dict[str, object],
     members: list[dict[str, object]],
     walkforward: dict[str, object] | None = None,
+    postprocess: dict[str, object] | None = None,
 ) -> None:
     payload = {
         "dataset_version": cfg.dataset_version,
@@ -202,6 +214,8 @@ def _write_training_checkpoint(
     }
     if walkforward is not None:
         payload["walkforward"] = walkforward
+    if postprocess is not None:
+        payload["postprocess"] = postprocess
     tmp_path = checkpoint_path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload, indent=2))
     tmp_path.replace(checkpoint_path)
@@ -212,6 +226,7 @@ def _load_training_checkpoint(
     cfg: TrainRuntimeConfig,
     lgb_params: dict[str, object],
     expected_walkforward: dict[str, object] | None = None,
+    expected_postprocess: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     if not checkpoint_path.exists():
         return []
@@ -236,6 +251,16 @@ def _load_training_checkpoint(
         raise RuntimeError(
             "Checkpoint mismatch for 'walkforward'. "
             f"Got {payload.get('walkforward')!r}, expected {expected_walkforward!r}. "
+            f"Delete {checkpoint_path} to retrain from scratch."
+        )
+    if (
+        expected_postprocess is not None
+        and payload.get("postprocess") is not None
+        and payload.get("postprocess") != expected_postprocess
+    ):
+        raise RuntimeError(
+            "Checkpoint mismatch for 'postprocess'. "
+            f"Got {payload.get('postprocess')!r}, expected {expected_postprocess!r}. "
             f"Delete {checkpoint_path} to retrain from scratch."
         )
 
@@ -325,13 +350,19 @@ def init_wandb_run(cfg: TrainRuntimeConfig, lgb_params: dict[str, object]) -> An
             "walkforward_purge_eras": cfg.walkforward_purge_eras,
             "walkforward_max_windows": cfg.walkforward_max_windows,
             "walkforward_tune_seed": cfg.walkforward_tune_seed,
+            "payout_weight_corr": cfg.payout_weight_corr,
+            "payout_weight_bmc": cfg.payout_weight_bmc,
+            "blend_alpha_grid": list(cfg.blend_alpha_grid),
+            "bench_neutralize_prop_grid": list(cfg.bench_neutralize_prop_grid),
+            "blend_tune_seed": cfg.blend_tune_seed,
+            "blend_use_windows": cfg.blend_use_windows,
             **lgb_params,
         },
     )
 
 
 def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
-    train_path, validation_path, features_path = _download_with_numerapi(cfg, cfg.numerai_data_dir)
+    train_path, validation_path, features_path, benchmark_paths = _download_with_numerapi(cfg, cfg.numerai_data_dir)
     feature_cols = _load_feature_list(features_path, cfg.feature_set_name)
     logger.info(
         "phase=datasets_downloaded dataset_version=%s data_dir=%s n_features=%d",
@@ -340,7 +371,7 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
         len(feature_cols),
     )
 
-    selected_cols = feature_cols + [cfg.target_col, cfg.era_col]
+    selected_cols = feature_cols + [cfg.target_col, cfg.era_col, cfg.id_col]
     train_df = _load_frame(train_path, selected_cols)
     valid_df = _load_frame(validation_path, selected_cols)
 
@@ -350,13 +381,16 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
     x_train = train_df.select(feature_cols).to_pandas()
     y_train = train_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
     era_train = train_df.get_column(cfg.era_col).to_numpy()
+    id_train = train_df.get_column(cfg.id_col).to_numpy()
     x_valid = valid_df.select(feature_cols).to_pandas()
     y_valid = valid_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
     era_valid = valid_df.get_column(cfg.era_col).to_numpy()
+    id_valid = valid_df.get_column(cfg.id_col).to_numpy()
     all_df = pl.concat([train_df, valid_df], how="vertical")
     x_all = all_df.select(feature_cols).to_pandas()
     y_all = all_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
     era_all = all_df.get_column(cfg.era_col).to_numpy()
+    id_all = all_df.get_column(cfg.id_col).to_numpy()
     era_all_int = era_to_int(era_all)
 
     order = np.argsort(era_all_int, kind="stable")
@@ -364,8 +398,22 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
     y_all = y_all[order]
     era_all = era_all[order]
     era_all_int = era_all_int[order]
+    id_all = id_all[order]
 
-    del train_df, valid_df, all_df
+    bench_train_df = load_benchmark_frame(benchmark_paths["train"])
+    bench_valid_df = load_benchmark_frame(benchmark_paths["validation"])
+    bench_train, bench_cols = align_bench_to_ids(id_train, bench_train_df, cfg.id_col)
+    bench_valid, bench_cols_valid = align_bench_to_ids(id_valid, bench_valid_df, cfg.id_col)
+    if bench_cols_valid != bench_cols:
+        raise RuntimeError(
+            f"Benchmark column mismatch: train has {bench_cols}, validation has {bench_cols_valid}."
+        )
+    bench_all_df = pl.concat([bench_train_df, bench_valid_df], how="vertical")
+    bench_all, bench_cols_all = align_bench_to_ids(id_all, bench_all_df, cfg.id_col)
+    if bench_cols_all != bench_cols:
+        raise RuntimeError(f"Benchmark column mismatch after concat: expected {bench_cols}, got {bench_cols_all}.")
+
+    del train_df, valid_df, all_df, bench_train_df, bench_valid_df, bench_all_df
     gc.collect()
 
     return LoadedData(
@@ -373,13 +421,20 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
         x_train=x_train,
         y_train=y_train,
         era_train=era_train,
+        id_train=id_train,
+        bench_train=bench_train,
         x_valid=x_valid,
         y_valid=y_valid,
         era_valid=era_valid,
+        id_valid=id_valid,
+        bench_valid=bench_valid,
         x_all=x_all,
         y_all=y_all,
         era_all=era_all,
         era_all_int=era_all_int,
+        id_all=id_all,
+        bench_all=bench_all,
+        bench_cols=bench_cols,
     )
 
 
@@ -658,6 +713,86 @@ def evaluate_walkforward(cfg: TrainRuntimeConfig, lgb_params: dict[str, object],
     )
 
 
+def _collect_blend_windows(
+    cfg: TrainRuntimeConfig,
+    lgb_params: dict[str, object],
+    data: LoadedData,
+    wf_report: WalkforwardReport,
+) -> list[dict[str, np.ndarray | int]]:
+    if cfg.blend_tune_seed is None:
+        raise RuntimeError(
+            "Blend tuning requires BLEND_TUNE_SEED (defaults to WALKFORWARD_TUNE_SEED when configured)."
+        )
+    tune_seed = int(cfg.blend_tune_seed)
+    selected_windows = wf_report.windows
+    if cfg.blend_use_windows:
+        selected_windows = selected_windows[-int(cfg.blend_use_windows) :]
+
+    rows: list[dict[str, np.ndarray | int]] = []
+    for row in selected_windows:
+        train_idx = np.flatnonzero(data.era_all_int <= int(row["train_end"]))
+        valid_idx = np.flatnonzero(
+            (data.era_all_int >= int(row["val_start"])) & (data.era_all_int <= int(row["val_end"]))
+        )
+        if train_idx.size == 0 or valid_idx.size == 0:
+            continue
+
+        x_train = data.x_all.iloc[train_idx].reset_index(drop=True)
+        y_train = data.y_all[train_idx]
+        x_valid = data.x_all.iloc[valid_idx].reset_index(drop=True)
+        y_valid = data.y_all[valid_idx]
+        era_valid = data.era_all[valid_idx]
+        bench_valid = data.bench_all[valid_idx]
+
+        fit_params = dict(lgb_params)
+        fit_params["seed"] = tune_seed
+        dtrain = lgb.Dataset(x_train, label=y_train, feature_name=data.feature_cols)
+        dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain, feature_name=data.feature_cols)
+        try:
+            model = lgb.train(
+                params=fit_params,
+                train_set=dtrain,
+                num_boost_round=cfg.num_boost_round,
+                valid_sets=[dtrain, dvalid],
+                valid_names=["train", "valid"],
+                callbacks=[lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)],
+            )
+        except lgb.basic.LightGBMError as exc:
+            if fit_params.get("device") != "gpu" or "No OpenCL device found" not in str(exc):
+                raise
+            fit_params["device"] = "cpu"
+            fit_params.pop("gpu_use_dp", None)
+            model = lgb.train(
+                params=fit_params,
+                train_set=dtrain,
+                num_boost_round=cfg.num_boost_round,
+                valid_sets=[dtrain, dvalid],
+                valid_names=["train", "valid"],
+                callbacks=[lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)],
+            )
+        best_iter = min(int(row["best_iter"]), int(model.current_iteration()))
+        if best_iter != int(row["best_iter"]):
+            logger.warning(
+                "phase=blend_best_iter_clamped window_id=%d reported_best_iter=%d current_iteration=%d",
+                int(row["window_id"]),
+                int(row["best_iter"]),
+                int(model.current_iteration()),
+            )
+        pred_raw = model.predict(x_valid, num_iteration=best_iter).astype(np.float32, copy=False)
+        rows.append(
+            {
+                "window_id": int(row["window_id"]),
+                "pred_raw": pred_raw,
+                "target": y_valid.astype(np.float32, copy=False),
+                "era": era_valid,
+                "bench": bench_valid,
+            }
+        )
+    if not rows:
+        raise RuntimeError("No windows available for blend tuning.")
+    return rows
+
+
 def save_and_log_artifact(
     cfg: TrainRuntimeConfig,
     run: Any,
@@ -666,6 +801,7 @@ def save_and_log_artifact(
     members: list[dict[str, object]],
     checkpoint_dir: Path,
     wf_report: WalkforwardReport | None = None,
+    postprocess_config: dict[str, object] | None = None,
 ) -> SavedArtifact:
     out_dir = Path("artifacts")
     out_dir.mkdir(exist_ok=True)
@@ -682,9 +818,11 @@ def save_and_log_artifact(
     features_out = out_dir / FEATURES_FILENAME
     manifest_out = out_dir / MANIFEST_FILENAME
     wf_windows_out = out_dir / "walkforward_windows.json"
+    postprocess_out = out_dir / "postprocess_config.json"
     features_out.write_text(json.dumps(data.feature_cols, indent=2))
     wf_windows_payload = wf_report.windows if wf_report is not None else []
     wf_windows_out.write_text(json.dumps(wf_windows_payload, indent=2))
+    postprocess_out.write_text(json.dumps(postprocess_config or {}, indent=2))
 
     walkforward_payload = None
     if wf_report is not None:
@@ -722,6 +860,7 @@ def save_and_log_artifact(
                 "model_files": [path.name for path in model_paths],
                 "lgb_params": lgb_params,
                 "walkforward": walkforward_payload,
+                "postprocess": postprocess_config,
             },
             indent=2,
         )
@@ -733,6 +872,7 @@ def save_and_log_artifact(
     artifact.add_file(str(features_out), name=FEATURES_FILENAME)
     artifact.add_file(str(manifest_out), name=MANIFEST_FILENAME)
     artifact.add_file(str(wf_windows_out), name=wf_windows_out.name)
+    artifact.add_file(str(postprocess_out), name=postprocess_out.name)
     run.log_artifact(artifact, aliases=["latest", "candidate"])
 
     logger.info(
@@ -758,11 +898,21 @@ def train() -> None:
     run = init_wandb_run(cfg, lgb_params)
     data = load_train_valid_frames(cfg)
     wf_report: WalkforwardReport | None = None
+    blend_report: BlendTuneReport | None = None
     checkpoint_walkforward: dict[str, object] | None = None
+    checkpoint_postprocess: dict[str, object] | None = None
     recommended_iter: int | None = None
     if cfg.walkforward_enabled:
         wf_report = evaluate_walkforward(cfg, lgb_params, data)
         recommended_iter = int(wf_report.recommended_num_iteration)
+        blend_windows = _collect_blend_windows(cfg, lgb_params, data, wf_report)
+        blend_report = tune_blend_on_windows(
+            windows=blend_windows,
+            alpha_grid=cfg.blend_alpha_grid,
+            prop_grid=cfg.bench_neutralize_prop_grid,
+            payout_weight_corr=float(cfg.payout_weight_corr),
+            payout_weight_bmc=float(cfg.payout_weight_bmc),
+        )
         checkpoint_walkforward = {
             "enabled": True,
             "chunk_size": int(cfg.walkforward_chunk_size),
@@ -770,6 +920,16 @@ def train() -> None:
             "max_windows": int(cfg.walkforward_max_windows),
             "tune_seed": int(cfg.walkforward_tune_seed if cfg.walkforward_tune_seed is not None else cfg.lgbm_seeds[0]),
             "recommended_num_iteration": recommended_iter,
+        }
+        checkpoint_postprocess = {
+            "schema_version": 1,
+            "blend_alpha": float(blend_report.best_alpha),
+            "bench_neutralize_prop": float(blend_report.best_prop),
+            "payout_weights": {
+                "corr": float(cfg.payout_weight_corr),
+                "bmc": float(cfg.payout_weight_bmc),
+            },
+            "bench_cols_used": data.bench_cols,
         }
         logger.info(
             "phase=walkforward_completed recommended_num_iteration=%d mean_corr=%.6f std_corr=%.6f sharpe=%.6f hit_rate=%.6f",
@@ -788,6 +948,7 @@ def train() -> None:
         cfg,
         lgb_params,
         expected_walkforward=checkpoint_walkforward,
+        expected_postprocess=checkpoint_postprocess,
     )
     completed_seeds = {int(member["seed"]) for member in members}
     if completed_seeds:
@@ -856,6 +1017,7 @@ def train() -> None:
             lgb_params,
             members,
             walkforward=checkpoint_walkforward,
+            postprocess=checkpoint_postprocess,
         )
         logger.info(
             "phase=seed_checkpoint_saved checkpoint_path=%s seed=%d completed=%d total=%d",
@@ -896,7 +1058,16 @@ def train() -> None:
         }
     )
 
-    save_and_log_artifact(cfg, run, lgb_params, data, members, checkpoint_dir, wf_report=wf_report)
+    save_and_log_artifact(
+        cfg,
+        run,
+        lgb_params,
+        data,
+        members,
+        checkpoint_dir,
+        wf_report=wf_report,
+        postprocess_config=checkpoint_postprocess,
+    )
     run.finish()
 
 
