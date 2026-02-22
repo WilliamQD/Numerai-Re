@@ -4,6 +4,8 @@ set -euo pipefail
 REPO_URL="https://github.com/WilliamQD/Numerai-Re.git"
 REPO_REF="${REPO_REF:-}"
 REPO_DIR="${REPO_DIR:-/content/Numerai-Re}"
+PERSISTENT_ROOT="${PERSISTENT_ROOT:-/content/drive/MyDrive/Numerai-Re}"
+DEFAULT_NUMERAI_DATA_DIR="${DEFAULT_NUMERAI_DATA_DIR:-${PERSISTENT_ROOT}/datasets/numerai}"
 ALLOW_UNPINNED_REF="${ALLOW_UNPINNED_REF:-0}"
 
 canon_url() {
@@ -16,6 +18,7 @@ echo "[bootstrap] Expected env vars: REPO_REF (optional 40-char commit SHA), REP
 echo "[bootstrap] Repo URL (fixed): ${REPO_URL}"
 echo "[bootstrap] Repo ref: ${REPO_REF:-main/latest}"
 echo "[bootstrap] Repo dir: ${REPO_DIR}"
+echo "[bootstrap] Persistent root: ${PERSISTENT_ROOT}"
 
 
 if [[ -n "${REPO_REF}" ]]; then
@@ -53,9 +56,24 @@ echo "[bootstrap] Step 3/4: Installing Python dependencies."
 python -m pip install --quiet --upgrade pip
 python -m pip install --quiet -r requirements-train.txt
 
-echo "[bootstrap] Step 4/4: Loading optional runtime secrets."
+echo "[bootstrap] Step 4/4: Mounting Google Drive and loading optional runtime secrets."
 python - <<'PY'
 import os
+
+try:
+    from google.colab import drive
+except Exception:
+    drive = None
+
+if drive:
+    drive.mount("/content/drive", force_remount=False)
+    persistent_root = os.getenv("PERSISTENT_ROOT", "/content/drive/MyDrive/Numerai-Re")
+    os.makedirs(persistent_root, exist_ok=True)
+    if not os.getenv("NUMERAI_DATA_DIR", "").strip():
+        default_data_dir = os.getenv("DEFAULT_NUMERAI_DATA_DIR", f"{persistent_root}/datasets/numerai")
+        os.makedirs(default_data_dir, exist_ok=True)
+        os.environ["NUMERAI_DATA_DIR"] = default_data_dir
+        print(f"[bootstrap] Set NUMERAI_DATA_DIR={default_data_dir}")
 
 if os.getenv("WANDB_API_KEY", "").strip():
     raise SystemExit(0)

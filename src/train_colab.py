@@ -93,6 +93,7 @@ def _resolve_lgb_params(cfg: TrainRuntimeConfig) -> dict[str, object]:
 
 def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Path, Path, Path]:
     """Download train/validation/features files, matching official example flow."""
+    data_dir = data_dir / cfg.dataset_version
     data_dir.mkdir(parents=True, exist_ok=True)
     numerapi_kwargs: dict[str, str] = {}
     if cfg.numerai_public_id and cfg.numerai_secret_key:
@@ -106,9 +107,17 @@ def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Pa
     validation_path = data_dir / "validation.parquet"
     features_path = data_dir / FEATURES_FILENAME
 
-    napi.download_dataset(f"{cfg.dataset_version}/train.parquet", str(train_path))
-    napi.download_dataset(f"{cfg.dataset_version}/validation.parquet", str(validation_path))
-    napi.download_dataset(f"{cfg.dataset_version}/{FEATURES_FILENAME}", str(features_path))
+    required_files = (
+        (f"{cfg.dataset_version}/train.parquet", train_path),
+        (f"{cfg.dataset_version}/validation.parquet", validation_path),
+        (f"{cfg.dataset_version}/{FEATURES_FILENAME}", features_path),
+    )
+    for dataset_path, local_path in required_files:
+        if local_path.exists():
+            logger.info("phase=dataset_reused path=%s", local_path)
+            continue
+        logger.info("phase=dataset_downloading dataset=%s path=%s", dataset_path, local_path)
+        napi.download_dataset(dataset_path, str(local_path))
 
     return train_path, validation_path, features_path
 

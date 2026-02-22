@@ -65,6 +65,8 @@ This repository implements a **remote-train / auto-submit** pipeline:
 - If `REPO_REF` is empty, Colab setup updates and runs the latest `main` branch.
 - `src/train_colab.py` fails fast if `WANDB_API_KEY` is missing.
 - `src/train_colab.py` downloads train/validation/features via `NumerAPI`; these public datasets work without NumerAI keys, but you can optionally set `NUMERAI_PUBLIC_ID` + `NUMERAI_SECRET_KEY` in Colab Secrets for authenticated downloads.
+- Colab setup mounts Google Drive and defaults persistent storage to `/content/drive/MyDrive/Numerai-Re`.
+- If `NUMERAI_DATA_DIR` is unset, Colab setup uses `/content/drive/MyDrive/Numerai-Re/datasets/numerai` and training reuses existing required files instead of re-downloading.
 - Notebook setup auto-loads `WANDB_API_KEY`, `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_ENTITY`, and `WANDB_PROJECT` from Colab Secrets when those environment variables are unset; missing secrets are skipped.
 - Keep secrets in Colab Secrets or environment variables; never hardcode keys into notebook/code.
 
@@ -87,7 +89,8 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | --- | --- | --- | --- |
 | `REPO_REF` | `notebooks/train_colab.ipynb` setup | unset | Optional full 40-character commit SHA override; when unset, setup runs latest `main`. |
 | `REPO_DIR` | `notebooks/train_colab.ipynb` setup | `/content/Numerai-Re` | Optional clone destination inside Colab runtime. |
-| `NUMERAI_DATA_DIR` | `src/train_colab.py` | `/content/numerai_data` | Override NumerAI dataset download path in Colab. |
+| `NUMERAI_DATA_DIR` | `src/train_colab.py` | `/content/drive/MyDrive/Numerai-Re/datasets/numerai` (Colab setup default) | Override NumerAI dataset download path in Colab. |
+| `PERSISTENT_ROOT` | `notebooks/train_colab.ipynb`, `scripts/colab_bootstrap.sh` | `/content/drive/MyDrive/Numerai-Re` | Persistent root inside Google Drive used by Colab setup for cached data. |
 | `NUMERAI_PUBLIC_ID` | `src/train_colab.py` | unset | Optional NumerAI public ID for authenticated training dataset downloads (public dataset download also works without it). |
 | `NUMERAI_SECRET_KEY` | `src/train_colab.py` | unset | Optional NumerAI secret key paired with `NUMERAI_PUBLIC_ID` for authenticated training dataset downloads. |
 | `NUMERAI_FEATURE_SET` | `src/train_colab.py` | `medium` | Select feature set from NumerAI `features.json`. |
