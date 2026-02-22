@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      NUMERAI_DATASET_VERSION: v4.3
-      WANDB_MODEL_NAME: lgbm_numerai_v43
+      NUMERAI_DATASET_VERSION: v5.2
+      WANDB_MODEL_NAME: lgbm_numerai_v52
       MAX_ABS_EXPOSURE: "0.30"
       MIN_PRED_STD: "1e-6"
 

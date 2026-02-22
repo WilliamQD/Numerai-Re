@@ -5,12 +5,15 @@ This repository implements a **remote-train / auto-submit** pipeline:
 - **Training engine (Colab Pro, 51GB RAM)**: `src/train_colab.py`
   - Uses `NumerAPI` (official NumerAI flow) to download train/validation/features datasets.
   - Uses Polars + float downcasting for efficient loading.
-  - Trains LightGBM and logs model artifacts to W&B with aliases (`latest`, `prod`).
+  - Trains LightGBM with per-seed checkpoint/resume and logs candidate model artifacts to W&B (`latest`, `candidate`).
 - **Inference agent (GitHub Actions)**: `src/inference.py`
   - Pulls the `prod` model artifact from W&B.
   - Downloads live data via `NumerAPI`.
+  - Enforces manifest/runtime dataset-version compatibility by default.
   - Applies drift/quality gates before submission.
   - Uploads predictions to NumerAI.
+- **Promotion gate (GitHub Actions)**: `.github/workflows/promote-model.yml`
+  - Promotes a checked `candidate` artifact to `prod` only after integrity/compatibility checks.
 - **Drift guard**: workflow opens a GitHub issue on failures.
 
 ## 60-second quickstart
@@ -35,6 +38,8 @@ This repository implements a **remote-train / auto-submit** pipeline:
 ## Files
 
 - `.github/workflows/submit.yml`: Weekly CI job and failure alert.
+- `.github/workflows/code-safety.yml`: Fast syntax + lint checks on PRs/pushes.
+- `.github/workflows/promote-model.yml`: Manual candidate-to-prod promotion workflow.
 - `notebooks/train_colab.ipynb`: Colab runner notebook (safe repo sync + dependency install + launch).
 - `scripts/colab_bootstrap.sh`: Clones fixed public repo into Colab runtime, enforces origin/ref safety checks, installs deps.
 - `src/train_colab.py`: Main training script.
@@ -67,6 +72,7 @@ This repository implements a **remote-train / auto-submit** pipeline:
 - `src/train_colab.py` downloads train/validation/features via `NumerAPI`; these public datasets work without NumerAI keys, but you can optionally set `NUMERAI_PUBLIC_ID` + `NUMERAI_SECRET_KEY` in Colab Secrets for authenticated downloads.
 - Colab setup mounts Google Drive and defaults persistent storage to `/content/drive/MyDrive/Numerai-Re`.
 - If `NUMERAI_DATA_DIR` is unset, Colab setup uses `/content/drive/MyDrive/Numerai-Re/datasets/numerai` and training reuses existing required files instead of re-downloading.
+- Training checkpoints are persisted under `NUMERAI_DATA_DIR/<dataset_version>/checkpoints/<WANDB_MODEL_NAME>/` so interrupted Colab runs resume remaining seeds only.
 - Notebook setup auto-loads `WANDB_API_KEY`, `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_ENTITY`, and `WANDB_PROJECT` from Colab Secrets when those environment variables are unset; missing secrets are skipped.
 - Keep secrets in Colab Secrets or environment variables; never hardcode keys into notebook/code.
 
@@ -108,6 +114,7 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `LGBM_NUM_BOOST_ROUND` | `src/train_colab.py` | `5000` | Number of boosting rounds (CPU baseline target range: 3000-6000). |
 | `LGBM_EARLY_STOPPING_ROUNDS` | `src/train_colab.py` | `300` | Early stopping rounds (CPU baseline target range: 200-400). |
 | `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v5.2` | Override NumerAI dataset version for live data. |
+| `ALLOW_DATASET_VERSION_MISMATCH` | `src/inference.py` | `false` | Explicitly allow inference with manifest/runtime dataset-version mismatch (not recommended). |
 | `MIN_PRED_STD` | `src/inference.py` | `1e-6` | Drift guard minimum prediction standard deviation threshold. |
 | `MAX_ABS_EXPOSURE` | `src/inference.py` | `0.30` | Drift guard maximum absolute feature exposure threshold. |
 
@@ -123,5 +130,6 @@ This repository implements a **remote-train / auto-submit** pipeline:
 Run from the repository root (`/workspace/Numerai-Re`):
 
 ```bash
-python -m py_compile src/train_colab.py src/inference.py
+python -m py_compile src/train_colab.py src/inference.py src/config.py src/promote_model.py
+ruff check src
 ```

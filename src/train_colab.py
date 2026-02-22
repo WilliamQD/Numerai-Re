@@ -25,6 +25,7 @@ from config import TrainRuntimeConfig
 
 FEATURES_FILENAME = "features.json"
 MANIFEST_FILENAME = "train_manifest.json"
+CHECKPOINT_FILENAME = "training_checkpoint.json"
 ARTIFACT_SCHEMA_VERSION = 2
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
@@ -47,6 +48,8 @@ class FitResult:
     model: lgb.Booster
     best_iteration: int
     best_valid_rmse: float
+    train_rmse_curve: list[float]
+    valid_rmse_curve: list[float]
 
 
 @dataclass(frozen=True)
@@ -156,6 +159,99 @@ def _load_frame(path: Path, selected_cols: list[str]) -> pl.DataFrame:
     return _downcast_floats(lf).collect(streaming=True)
 
 
+def _checkpoint_dir(cfg: TrainRuntimeConfig) -> Path:
+    return cfg.numerai_data_dir / cfg.dataset_version / "checkpoints" / cfg.model_name
+
+
+def _write_training_checkpoint(
+    checkpoint_path: Path,
+    cfg: TrainRuntimeConfig,
+    lgb_params: dict[str, object],
+    members: list[dict[str, object]],
+) -> None:
+    payload = {
+        "dataset_version": cfg.dataset_version,
+        "feature_set": cfg.feature_set_name,
+        "seeds": list(cfg.lgbm_seeds),
+        "lgb_params": lgb_params,
+        "completed_seeds": [int(member["seed"]) for member in members],
+        "members": members,
+    }
+    tmp_path = checkpoint_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2))
+    tmp_path.replace(checkpoint_path)
+
+
+def _load_training_checkpoint(
+    checkpoint_path: Path,
+    cfg: TrainRuntimeConfig,
+    lgb_params: dict[str, object],
+) -> list[dict[str, object]]:
+    if not checkpoint_path.exists():
+        return []
+
+    payload = json.loads(checkpoint_path.read_text())
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Invalid checkpoint payload at {checkpoint_path}: expected JSON object.")
+
+    expected_meta = {
+        "dataset_version": cfg.dataset_version,
+        "feature_set": cfg.feature_set_name,
+        "seeds": list(cfg.lgbm_seeds),
+        "lgb_params": lgb_params,
+    }
+    for key, expected_value in expected_meta.items():
+        if payload.get(key) != expected_value:
+            raise RuntimeError(
+                f"Checkpoint mismatch for '{key}': got {payload.get(key)!r}, expected {expected_value!r}. "
+                f"Delete {checkpoint_path} to retrain from scratch."
+            )
+
+    members = payload.get("members")
+    if not isinstance(members, list):
+        raise RuntimeError(f"Invalid checkpoint payload at {checkpoint_path}: expected 'members' list.")
+
+    normalized_members: list[dict[str, object]] = []
+    for member in members:
+        if not isinstance(member, dict):
+            raise RuntimeError(f"Invalid checkpoint member in {checkpoint_path}: expected object, got {type(member)!r}.")
+        try:
+            seed = int(member["seed"])
+            model_file = str(member["model_file"])
+            best_iteration = int(member["best_iteration"])
+            best_valid_rmse = float(member["best_valid_rmse"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"Invalid checkpoint member schema in {checkpoint_path}: {member!r}") from exc
+        if not model_file:
+            raise RuntimeError(f"Invalid checkpoint member model_file in {checkpoint_path}: {member!r}")
+        normalized_members.append(
+            {
+                "seed": seed,
+                "model_file": model_file,
+                "best_iteration": best_iteration,
+                "best_valid_rmse": best_valid_rmse,
+            }
+        )
+    return normalized_members
+
+
+def _log_seed_observability(result: FitResult) -> None:
+    seed_label = str(result.seed)
+    wandb.log(
+        {
+            f"seed/{seed_label}/best_iteration": result.best_iteration,
+            f"seed/{seed_label}/best_valid_rmse": result.best_valid_rmse,
+            f"seed/{seed_label}/learning_curve": wandb.plot.line_series(
+                xs=list(range(1, len(result.train_rmse_curve) + 1)),
+                ys=[result.train_rmse_curve, result.valid_rmse_curve],
+                keys=["train_rmse", "valid_rmse"],
+                title=f"Seed {seed_label} RMSE",
+                xname="iteration",
+            ),
+        }
+    )
+
+
 def init_wandb_run(cfg: TrainRuntimeConfig, lgb_params: dict[str, object]) -> Any:
     wandb.login()
     return wandb.init(
@@ -251,8 +347,17 @@ def fit_lgbm(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: Loade
 
     best_iter = int(model.best_iteration)
     best_rmse = float(evals_result["valid"]["rmse"][max(0, best_iter - 1)])
+    train_curve = [float(v) for v in evals_result["train"]["rmse"]]
+    valid_curve = [float(v) for v in evals_result["valid"]["rmse"]]
     logger.info("phase=model_trained seed=%d best_iteration=%d best_valid_rmse=%.6f", seed, best_iter, best_rmse)
-    return FitResult(seed=seed, model=model, best_iteration=best_iter, best_valid_rmse=best_rmse)
+    return FitResult(
+        seed=seed,
+        model=model,
+        best_iteration=best_iter,
+        best_valid_rmse=best_rmse,
+        train_rmse_curve=train_curve,
+        valid_rmse_curve=valid_curve,
+    )
 
 
 def save_and_log_artifact(
@@ -260,15 +365,18 @@ def save_and_log_artifact(
     run: Any,
     lgb_params: dict[str, object],
     data: LoadedData,
-    fit_results: list[FitResult],
+    members: list[dict[str, object]],
+    checkpoint_dir: Path,
 ) -> SavedArtifact:
     out_dir = Path("artifacts")
     out_dir.mkdir(exist_ok=True)
 
     model_paths: list[Path] = []
-    for fit_result in fit_results:
-        model_path = out_dir / f"{cfg.model_name}_seed{fit_result.seed}.txt"
-        fit_result.model.save_model(str(model_path))
+    for member in members:
+        model_filename = str(member["model_file"])
+        model_path = checkpoint_dir / model_filename
+        if not model_path.exists():
+            raise RuntimeError(f"Missing checkpointed model file: {model_path}")
         model_paths.append(model_path)
 
     features_out = out_dir / FEATURES_FILENAME
@@ -286,20 +394,12 @@ def save_and_log_artifact(
                 "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
                 "ensemble_strategy": "mean",
                 "seeds": list(cfg.lgbm_seeds),
-                "members": [
-                    {
-                        "seed": result.seed,
-                        "model_file": f"{cfg.model_name}_seed{result.seed}.txt",
-                        "best_iteration": result.best_iteration,
-                        "best_valid_rmse": result.best_valid_rmse,
-                    }
-                    for result in fit_results
-                ],
-                "best_iteration_mean": float(np.mean([result.best_iteration for result in fit_results])),
-                "best_valid_rmse_mean": float(np.mean([result.best_valid_rmse for result in fit_results])),
+                "members": members,
+                "best_iteration_mean": float(np.mean([float(member["best_iteration"]) for member in members])),
+                "best_valid_rmse_mean": float(np.mean([float(member["best_valid_rmse"]) for member in members])),
                 "n_features": len(data.feature_cols),
                 "model_name": cfg.model_name,
-                "model_file": f"{cfg.model_name}_seed{fit_results[0].seed}.txt",
+                "model_file": str(members[0]["model_file"]),
                 "model_files": [path.name for path in model_paths],
                 "lgb_params": lgb_params,
             },
@@ -312,9 +412,13 @@ def save_and_log_artifact(
         artifact.add_file(str(model_path), name=model_path.name)
     artifact.add_file(str(features_out), name=FEATURES_FILENAME)
     artifact.add_file(str(manifest_out), name=MANIFEST_FILENAME)
-    run.log_artifact(artifact, aliases=["latest", "prod"])
+    run.log_artifact(artifact, aliases=["latest", "candidate"])
 
-    logger.info("phase=artifact_uploaded artifact_name=%s aliases=latest,prod model_count=%d", cfg.model_name, len(model_paths))
+    logger.info(
+        "phase=artifact_uploaded artifact_name=%s aliases=latest,candidate model_count=%d",
+        cfg.model_name,
+        len(model_paths),
+    )
     return SavedArtifact(model_paths=model_paths, features_path=features_out, manifest_path=manifest_out)
 
 
@@ -332,17 +436,72 @@ def train() -> None:
     lgb_params = _resolve_lgb_params(cfg)
     run = init_wandb_run(cfg, lgb_params)
     data = load_train_valid_frames(cfg)
+    checkpoint_dir = _checkpoint_dir(cfg)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / CHECKPOINT_FILENAME
 
-    fit_results = [fit_lgbm(cfg, lgb_params, data, seed) for seed in cfg.lgbm_seeds]
+    members = _load_training_checkpoint(checkpoint_path, cfg, lgb_params)
+    completed_seeds = {int(member["seed"]) for member in members}
+    if completed_seeds:
+        logger.info(
+            "phase=checkpoint_loaded checkpoint_path=%s completed_seeds=%s",
+            checkpoint_path,
+            sorted(completed_seeds),
+        )
+
+    for member in members:
+        model_path = checkpoint_dir / str(member["model_file"])
+        if not model_path.exists():
+            raise RuntimeError(f"Checkpoint references missing model file: {model_path}")
+
+    for seed in cfg.lgbm_seeds:
+        if seed in completed_seeds:
+            logger.info("phase=seed_skipped_already_completed seed=%d", seed)
+            continue
+        fit_result = fit_lgbm(cfg, lgb_params, data, seed)
+        model_file = f"{cfg.model_name}_seed{seed}.txt"
+        fit_result.model.save_model(str(checkpoint_dir / model_file))
+        member = {
+            "seed": seed,
+            "model_file": model_file,
+            "best_iteration": fit_result.best_iteration,
+            "best_valid_rmse": fit_result.best_valid_rmse,
+        }
+        members.append(member)
+        completed_seeds.add(seed)
+        _write_training_checkpoint(checkpoint_path, cfg, lgb_params, members)
+        _log_seed_observability(fit_result)
+        logger.info(
+            "phase=seed_checkpoint_saved checkpoint_path=%s seed=%d completed=%d total=%d",
+            checkpoint_path,
+            seed,
+            len(completed_seeds),
+            len(cfg.lgbm_seeds),
+        )
+
+    if len(members) != len(cfg.lgbm_seeds):
+        raise RuntimeError(
+            f"Incomplete checkpoint state: expected {len(cfg.lgbm_seeds)} seeds, got {len(members)} members."
+        )
+
+    summary_table = wandb.Table(columns=["seed", "best_iteration", "best_valid_rmse", "model_file"])
+    for member in members:
+        summary_table.add_data(
+            int(member["seed"]),
+            int(member["best_iteration"]),
+            float(member["best_valid_rmse"]),
+            str(member["model_file"]),
+        )
     wandb.log(
         {
-            "best_iteration_mean": float(np.mean([result.best_iteration for result in fit_results])),
-            "best_valid_rmse_mean": float(np.mean([result.best_valid_rmse for result in fit_results])),
-            "n_models": len(fit_results),
+            "best_iteration_mean": float(np.mean([float(member["best_iteration"]) for member in members])),
+            "best_valid_rmse_mean": float(np.mean([float(member["best_valid_rmse"]) for member in members])),
+            "n_models": len(members),
+            "ensemble_members": summary_table,
         }
     )
 
-    save_and_log_artifact(cfg, run, lgb_params, data, fit_results)
+    save_and_log_artifact(cfg, run, lgb_params, data, members, checkpoint_dir)
     run.finish()
 
 

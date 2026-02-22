@@ -122,13 +122,24 @@ def main() -> int:
         cfg.numerai_model_name,
     )
 
-    napi = NumerAPI(public_id=cfg.numerai_public_id, secret_key=cfg.numerai_secret_key)
+    models, feature_cols, manifest = load_prod_model(cfg)
+    manifest_dataset_version = manifest.get("dataset_version")
+    if manifest_dataset_version != cfg.dataset_version:
+        message = (
+            f"Dataset version mismatch: model manifest has {manifest_dataset_version!r}, "
+            f"but runtime expects {cfg.dataset_version!r}."
+        )
+        if cfg.allow_dataset_version_mismatch:
+            logger.warning("%s Proceeding due to ALLOW_DATASET_VERSION_MISMATCH=true.", message)
+        else:
+            raise RuntimeError(
+                f"{message} Set ALLOW_DATASET_VERSION_MISMATCH=true only for intentional override."
+            )
 
+    napi = NumerAPI(public_id=cfg.numerai_public_id, secret_key=cfg.numerai_secret_key)
     live_path = Path("live.parquet")
     napi.download_dataset(f"{cfg.dataset_version}/live.parquet", str(live_path))
     logger.info("phase=datasets_downloaded dataset_version=%s live_path=%s", cfg.dataset_version, live_path)
-
-    models, feature_cols, manifest = load_prod_model(cfg)
 
     live_df = pd.read_parquet(live_path)
     logger.info(
