@@ -94,11 +94,20 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `NUMERAI_PUBLIC_ID` | `src/train_colab.py` | unset | Optional NumerAI public ID for authenticated training dataset downloads (public dataset download also works without it). |
 | `NUMERAI_SECRET_KEY` | `src/train_colab.py` | unset | Optional NumerAI secret key paired with `NUMERAI_PUBLIC_ID` for authenticated training dataset downloads. |
 | `NUMERAI_FEATURE_SET` | `src/train_colab.py` | `medium` | Select feature set from NumerAI `features.json`. |
-| `WANDB_MODEL_NAME` | `src/train_colab.py`, `src/inference.py` | `lgbm_numerai_v43` | Override model artifact name for logging/loading. |
+| `WANDB_MODEL_NAME` | `src/train_colab.py`, `src/inference.py` | `lgbm_numerai_v52` | Override model artifact name for logging/loading. |
 | `WANDB_PROJECT` | `src/train_colab.py` | `numerai-mlops` | Override W&B project for training logs. |
 | `WANDB_ENTITY` | `src/train_colab.py` | unset | Optional W&B entity override for training run ownership. |
-| `LGBM_DEVICE` | `src/train_colab.py` | `gpu` | Choose `gpu` (default) or `cpu` fallback for LightGBM. |
-| `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v4.3` | Override NumerAI dataset version for live data. |
+| `LGBM_DEVICE` | `src/train_colab.py` | `cpu` | Choose CPU-first training (`cpu`, default) or optional `gpu` acceleration (auto-fallbacks to CPU if OpenCL GPU is unavailable). |
+| `LGBM_SEEDS` | `src/train_colab.py` | `42,1337,2026` | Comma-separated seeds used for multi-model training; predictions are ensembled by mean. |
+| `LGBM_NUM_LEAVES` | `src/train_colab.py` | `128` | LightGBM leaves for CPU-focused Numerai baseline. |
+| `LGBM_MIN_DATA_IN_LEAF` | `src/train_colab.py` | `1000` | LightGBM minimum data in leaf for regularization on large tabular training sets. |
+| `LGBM_FEATURE_FRACTION` | `src/train_colab.py` | `0.7` | Column subsampling fraction per tree. |
+| `LGBM_BAGGING_FRACTION` | `src/train_colab.py` | `0.8` | Row subsampling fraction for bagging. |
+| `LGBM_BAGGING_FREQ` | `src/train_colab.py` | `1` | Bagging frequency. |
+| `LGBM_LEARNING_RATE` | `src/train_colab.py` | `0.02` | Learning rate for boosting. |
+| `LGBM_NUM_BOOST_ROUND` | `src/train_colab.py` | `5000` | Number of boosting rounds (CPU baseline target range: 3000-6000). |
+| `LGBM_EARLY_STOPPING_ROUNDS` | `src/train_colab.py` | `300` | Early stopping rounds (CPU baseline target range: 200-400). |
+| `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v5.2` | Override NumerAI dataset version for live data. |
 | `MIN_PRED_STD` | `src/inference.py` | `1e-6` | Drift guard minimum prediction standard deviation threshold. |
 | `MAX_ABS_EXPOSURE` | `src/inference.py` | `0.30` | Drift guard maximum absolute feature exposure threshold. |
 
