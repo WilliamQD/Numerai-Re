@@ -78,7 +78,7 @@ def tune_blend_on_windows(
             }
             search_rows.append(row)
             metrics = (row["hit_rate"], row["mean_score"], row["mean_corr"])
-            if best_row is None or metrics > (best_metrics or (-np.inf, -np.inf, -np.inf)):
+            if best_row is None or metrics > best_metrics:
                 best_row = row
                 best_metrics = metrics
 

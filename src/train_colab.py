@@ -405,11 +405,13 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
     bench_train, bench_cols = align_bench_to_ids(id_train, bench_train_df, cfg.id_col)
     bench_valid, bench_cols_valid = align_bench_to_ids(id_valid, bench_valid_df, cfg.id_col)
     if bench_cols_valid != bench_cols:
-        raise RuntimeError("Benchmark column mismatch between train and validation benchmark files.")
+        raise RuntimeError(
+            f"Benchmark column mismatch: train has {bench_cols}, validation has {bench_cols_valid}."
+        )
     bench_all_df = pl.concat([bench_train_df, bench_valid_df], how="vertical")
     bench_all, bench_cols_all = align_bench_to_ids(id_all, bench_all_df, cfg.id_col)
     if bench_cols_all != bench_cols:
-        raise RuntimeError("Benchmark column mismatch for concatenated benchmark data.")
+        raise RuntimeError(f"Benchmark column mismatch after concat: expected {bench_cols}, got {bench_cols_all}.")
 
     del train_df, valid_df, all_df, bench_train_df, bench_valid_df, bench_all_df
     gc.collect()
@@ -717,7 +719,11 @@ def _collect_blend_windows(
     data: LoadedData,
     wf_report: WalkforwardReport,
 ) -> list[dict[str, np.ndarray | int]]:
-    tune_seed = int(cfg.blend_tune_seed if cfg.blend_tune_seed is not None else cfg.lgbm_seeds[0])
+    if cfg.blend_tune_seed is None:
+        raise RuntimeError(
+            "Blend tuning requires BLEND_TUNE_SEED (defaults to WALKFORWARD_TUNE_SEED when configured)."
+        )
+    tune_seed = int(cfg.blend_tune_seed)
     selected_windows = wf_report.windows
     if cfg.blend_use_windows:
         selected_windows = selected_windows[-int(cfg.blend_use_windows) :]
@@ -765,6 +771,13 @@ def _collect_blend_windows(
                 callbacks=[lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)],
             )
         best_iter = min(int(row["best_iter"]), int(model.current_iteration()))
+        if best_iter != int(row["best_iter"]):
+            logger.warning(
+                "phase=blend_best_iter_clamped window_id=%d reported_best_iter=%d current_iteration=%d",
+                int(row["window_id"]),
+                int(row["best_iter"]),
+                int(model.current_iteration()),
+            )
         pred_raw = model.predict(x_valid, num_iteration=best_iter).astype(np.float32, copy=False)
         rows.append(
             {
