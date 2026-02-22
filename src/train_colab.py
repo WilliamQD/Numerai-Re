@@ -576,8 +576,6 @@ def evaluate_walkforward(cfg: TrainRuntimeConfig, lgb_params: dict[str, object],
                     lgb.record_evaluation(evals_result),
                 ],
             )
-            lgb_params["device"] = "cpu"
-            lgb_params.pop("gpu_use_dp", None)
 
         corr_scan_iters = _corr_scan_iterations(cfg, int(model.current_iteration()))
         best_corr, best_iter, _ = _best_corr_iteration(
@@ -808,10 +806,10 @@ def train() -> None:
         if seed in completed_seeds:
             logger.info("phase=seed_skipped_already_completed seed=%d", seed)
             continue
-        model_file = f"{cfg.model_name}_seed{seed}.txt"
         if cfg.walkforward_enabled:
             if recommended_iter is None:
                 raise RuntimeError("Walk-forward is enabled but recommended_num_iteration is not available.")
+            model_file = f"{cfg.model_name}_seed{seed}.txt"
             final_model = fit_lgbm_final(
                 lgb_params=lgb_params,
                 x=data.x_all,
@@ -839,6 +837,7 @@ def train() -> None:
             )
         else:
             fit_result = fit_lgbm(cfg, lgb_params, data, seed)
+            model_file = f"{cfg.model_name}_seed{seed}.txt"
             fit_result.model.save_model(str(checkpoint_dir / model_file), num_iteration=fit_result.best_iteration)
             member = {
                 "seed": seed,

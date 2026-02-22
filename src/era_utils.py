@@ -9,7 +9,14 @@ _ERA_RE = re.compile(r"(\d+)")
 
 
 def era_to_int(arr) -> np.ndarray:
-    """Convert era labels to integer era numbers."""
+    """Convert era labels to integer era numbers.
+
+    Args:
+        arr: Array-like of era values, e.g. integers or strings like ``era123``.
+
+    Returns:
+        A ``np.int32`` array of parsed era numbers.
+    """
     a = np.asarray(arr)
     if np.issubdtype(a.dtype, np.integer):
         return a.astype(np.int32, copy=False)
