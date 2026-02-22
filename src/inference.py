@@ -19,6 +19,8 @@ from postprocess import PostprocessConfig, apply_postprocess
 
 
 FEATURES_FILENAME = "features.json"
+FEATURES_UNION_FILENAME = "features_union.json"
+FEATURES_BY_MODEL_FILENAME = "features_by_model.json"
 MANIFEST_FILENAME = "train_manifest.json"
 POSTPROCESS_FILENAME = "postprocess_config.json"
 REQUIRED_MANIFEST_KEYS = ("dataset_version", "feature_set")
@@ -66,13 +68,15 @@ def _resolve_manifest(manifest_path: Path, model_name: str) -> tuple[dict, list[
 
 def _load_artifact_from_root(
     root: Path, cfg: InferenceRuntimeConfig, artifact_ref: str
-) -> tuple[list[lgb.Booster], list[str], dict, PostprocessConfig]:
+) -> tuple[list[lgb.Booster], list[str], dict[str, list[str]], dict, PostprocessConfig]:
     features_path = root / FEATURES_FILENAME
+    features_union_path = root / FEATURES_UNION_FILENAME
+    features_by_model_path = root / FEATURES_BY_MODEL_FILENAME
     manifest_path = root / MANIFEST_FILENAME
     postprocess_path = root / POSTPROCESS_FILENAME
     manifest, model_filenames = _resolve_manifest(manifest_path, cfg.wandb_model_name)
 
-    if not features_path.exists():
+    if not features_path.exists() and not features_union_path.exists():
         raise RuntimeError(f"Model artifact is missing required file '{FEATURES_FILENAME}'.")
     if not postprocess_path.exists():
         raise RuntimeError(f"Model artifact is missing required file '{POSTPROCESS_FILENAME}'.")
@@ -81,9 +85,26 @@ def _load_artifact_from_root(
     if missing_models:
         raise RuntimeError(f"Model artifact is missing model files: {missing_models}")
 
-    feature_cols = json.loads(features_path.read_text())
+    feature_cols_path = features_union_path if features_union_path.exists() else features_path
+    feature_cols = json.loads(feature_cols_path.read_text())
     if not isinstance(feature_cols, list) or not feature_cols or not all(isinstance(col, str) and col for col in feature_cols):
-        raise RuntimeError(f"Invalid '{FEATURES_FILENAME}' in model artifact: expected non-empty list of features.")
+        raise RuntimeError(f"Invalid '{feature_cols_path.name}' in model artifact: expected non-empty list of features.")
+
+    features_by_model: dict[str, list[str]] = {}
+    if features_by_model_path.exists():
+        raw_mapping = json.loads(features_by_model_path.read_text())
+        if not isinstance(raw_mapping, dict):
+            raise RuntimeError(f"Invalid '{FEATURES_BY_MODEL_FILENAME}' in model artifact: expected object.")
+        for key, value in raw_mapping.items():
+            if isinstance(key, str) and isinstance(value, list) and all(isinstance(col, str) and col for col in value):
+                features_by_model[key] = value
+    elif not cfg.allow_features_by_model_missing:
+        raise RuntimeError(
+            f"Model artifact is missing required file '{FEATURES_BY_MODEL_FILENAME}'. "
+            "Set ALLOW_FEATURES_BY_MODEL_MISSING=true only for legacy artifacts."
+        )
+    if not features_by_model:
+        features_by_model = {model_filename: feature_cols for model_filename in model_filenames}
 
     post_cfg = PostprocessConfig.from_json(postprocess_path)
     models = [lgb.Booster(model_file=str(root / model_filename)) for model_filename in model_filenames]
@@ -101,10 +122,12 @@ def _load_artifact_from_root(
         post_cfg.bench_neutralize_prop,
         post_cfg.feature_neutralize_prop,
     )
-    return models, feature_cols, manifest, post_cfg
+    return models, feature_cols, features_by_model, manifest, post_cfg
 
 
-def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[list[lgb.Booster], list[str], dict, PostprocessConfig]:
+def load_prod_model(
+    cfg: InferenceRuntimeConfig,
+) -> tuple[list[lgb.Booster], list[str], dict[str, list[str]], dict, PostprocessConfig]:
     ref = f"{cfg.wandb_entity}/{cfg.wandb_project}/{cfg.wandb_model_name}:prod"
     api = wandb.Api()
     artifact = api.artifact(ref, type="model")
@@ -120,6 +143,25 @@ def _download_live_benchmark_dataset(napi: NumerAPI, dataset_version: str, out_p
             napi.download_dataset(dataset, str(out_path))
             return out_path
     raise DriftGuardError(f"Could not find live benchmark models dataset under {dataset_version}/")
+
+
+def _download_live_dataset(napi: NumerAPI, dataset_version: str, out_path: Path, use_int8_parquet: bool) -> Path:
+    datasets = napi.list_datasets()
+    prefix = dataset_version.lower() + "/"
+    live_parquets = [
+        dataset
+        for dataset in datasets
+        if dataset.lower().startswith(prefix) and dataset.lower().endswith(".parquet") and "live" in dataset.lower()
+    ]
+    selected = next((dataset for dataset in live_parquets if "int8" in dataset.lower()), None) if use_int8_parquet else None
+    if selected is None:
+        selected = next((dataset for dataset in live_parquets if "int8" not in dataset.lower()), None)
+    if selected is None:
+        selected = f"{dataset_version}/live.parquet"
+    if use_int8_parquet and "int8" not in selected.lower():
+        logger.warning("phase=int8_live_fallback dataset_version=%s reason=int8_not_found", dataset_version)
+    napi.download_dataset(selected, str(out_path))
+    return out_path
 
 
 def apply_quality_gates(
@@ -158,6 +200,14 @@ def apply_quality_gates(
         )
 
 
+def _model_feature_cols(
+    model_filename: str,
+    features_by_model: dict[str, list[str]],
+    union_feature_cols: list[str],
+) -> list[str]:
+    return features_by_model.get(model_filename, union_feature_cols)
+
+
 def _build_mock_artifact_dir(root: Path, dataset_version: str, model_name: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
     feature_cols = [f"feature_{idx:02d}" for idx in range(6)]
@@ -172,6 +222,8 @@ def _build_mock_artifact_dir(root: Path, dataset_version: str, model_name: str) 
     model_file = f"{model_name}_dry_run.txt"
     booster.save_model(str(root / model_file))
     (root / FEATURES_FILENAME).write_text(json.dumps(feature_cols, indent=2))
+    (root / FEATURES_UNION_FILENAME).write_text(json.dumps(feature_cols, indent=2))
+    (root / FEATURES_BY_MODEL_FILENAME).write_text(json.dumps({model_file: feature_cols}, indent=2))
     (root / MANIFEST_FILENAME).write_text(
         json.dumps(
             {
@@ -180,6 +232,8 @@ def _build_mock_artifact_dir(root: Path, dataset_version: str, model_name: str) 
                 "artifact_schema_version": 3,
                 "model_file": model_file,
                 "model_files": [model_file],
+                "features_union_file": FEATURES_UNION_FILENAME,
+                "features_by_model_file": FEATURES_BY_MODEL_FILENAME,
             },
             indent=2,
         )
@@ -219,7 +273,9 @@ def inference_dry_run() -> int:
     )
     artifact_root = Path("artifacts") / "mock_prod"
     _build_mock_artifact_dir(artifact_root, cfg.dataset_version, cfg.wandb_model_name)
-    models, feature_cols, manifest, post_cfg = _load_artifact_from_root(artifact_root, cfg, "local/mock:dry-run")
+    models, feature_cols, features_by_model, manifest, post_cfg = _load_artifact_from_root(
+        artifact_root, cfg, "local/mock:dry-run"
+    )
 
     rng = np.random.default_rng(13)
     rows = 120
@@ -239,8 +295,11 @@ def inference_dry_run() -> int:
     live_bench_path = Path("live_benchmark_models.parquet")
     bench_df.to_parquet(live_bench_path, index=False)
 
-    x_live = live_df[feature_cols]
-    model_preds = [model.predict(x_live).astype(np.float32) for model in models]
+    model_files = manifest.get("model_files", [f"{cfg.wandb_model_name}_dry_run.txt"])
+    model_preds = []
+    for model, model_file in zip(models, model_files):
+        model_cols = _model_feature_cols(str(model_file), features_by_model, feature_cols)
+        model_preds.append(model.predict(live_df[model_cols]).astype(np.float32))
     bench_cols_used = list(post_cfg.bench_cols_used)
     bench_aligned = pd.read_parquet(live_bench_path, columns=["id", *bench_cols_used]).set_index("id").loc[live_id].to_numpy(
         dtype=np.float32, copy=False
@@ -253,7 +312,7 @@ def inference_dry_run() -> int:
         bench=bench_aligned,
         features=None,
     )
-    apply_quality_gates(x_live, pred_final, cfg, submission_transform=post_cfg.submission_transform)
+    apply_quality_gates(live_df[feature_cols], pred_final, cfg, submission_transform=post_cfg.submission_transform)
     submission = pd.DataFrame({"id": live_id, "prediction": pred_final})
     submission.to_csv("submission.csv", index=False)
     print(f"INFER_DRY_RUN_OK rows={len(submission)} manifest_dataset={manifest.get('dataset_version')}")
@@ -271,7 +330,10 @@ def main() -> int:
         cfg.numerai_model_name,
     )
 
-    models, feature_cols, manifest, post_cfg = load_prod_model(cfg)
+    models, feature_cols, features_by_model, manifest, post_cfg = load_prod_model(cfg)
+    model_files = manifest.get("model_files", [f"{cfg.wandb_model_name}.txt"])
+    if len(model_files) != len(models):
+        model_files = [f"{cfg.wandb_model_name}.txt" for _ in models]
     manifest_dataset_version = manifest.get("dataset_version")
     if manifest_dataset_version != cfg.dataset_version:
         message = (
@@ -288,7 +350,12 @@ def main() -> int:
     napi = NumerAPI(public_id=cfg.numerai_public_id, secret_key=cfg.numerai_secret_key)
     live_path = Path("live.parquet")
     live_bench_path = Path("live_benchmark_models.parquet")
-    napi.download_dataset(f"{cfg.dataset_version}/live.parquet", str(live_path))
+    _download_live_dataset(
+        napi,
+        cfg.dataset_version,
+        live_path,
+        use_int8_parquet=_optional_bool_env("USE_INT8_PARQUET", default=False),
+    )
     _download_live_benchmark_dataset(napi, cfg.dataset_version, live_bench_path)
     logger.info("phase=datasets_downloaded dataset_version=%s live_path=%s", cfg.dataset_version, live_path)
 
@@ -315,8 +382,13 @@ def main() -> int:
     if "era" not in live_df.columns:
         raise DriftGuardError("Live data is missing required 'era' column.")
 
-    x_live = live_df[feature_cols]
-    model_preds = [model.predict(x_live).astype(np.float32) for model in models]
+    model_preds = []
+    for model, model_file in zip(models, model_files):
+        model_cols = _model_feature_cols(str(model_file), features_by_model, feature_cols)
+        missing_model_cols = [col for col in model_cols if col not in live_df.columns]
+        if missing_model_cols:
+            raise DriftGuardError(f"Live data missing model-specific features for {model_file}: {missing_model_cols[:10]}")
+        model_preds.append(model.predict(live_df[model_cols]).astype(np.float32))
 
     if "id" in live_df.columns:
         live_id = live_df["id"].to_numpy()
@@ -344,7 +416,7 @@ def main() -> int:
         n_features = min(post_cfg.feature_neutralize_n_features, len(feature_cols))
         rng = np.random.default_rng(post_cfg.feature_neutralize_seed)
         selected = np.sort(rng.choice(len(feature_cols), size=n_features, replace=False))
-        features_for_postprocess = x_live.iloc[:, selected].to_numpy(dtype=np.float32, copy=False)
+        features_for_postprocess = live_df[feature_cols].iloc[:, selected].to_numpy(dtype=np.float32, copy=False)
 
     pred_final = apply_postprocess(
         pred_raw=pred_raw,
@@ -359,7 +431,7 @@ def main() -> int:
         float(np.max(pred_final)),
         float(np.std(pred_final)),
     )
-    apply_quality_gates(x_live, pred_final, cfg, submission_transform=post_cfg.submission_transform)
+    apply_quality_gates(live_df[feature_cols], pred_final, cfg, submission_transform=post_cfg.submission_transform)
 
     submission = pd.DataFrame({"id": live_id, "prediction": pred_final})
     submission_path = Path("submission.csv")

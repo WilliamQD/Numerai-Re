@@ -105,6 +105,12 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `WANDB_ENTITY` | `src/train_colab.py` | unset | Optional W&B entity override for training run ownership. |
 | `LGBM_DEVICE` | `src/train_colab.py` | `cpu` | Choose CPU-first training (`cpu`, default) or optional `gpu` acceleration (auto-fallbacks to CPU if OpenCL GPU is unavailable). |
 | `LGBM_SEEDS` | `src/train_colab.py` | `42,1337,2026` | Comma-separated seeds used for multi-model training; predictions are ensembled by mean. |
+| `MAX_FEATURES_PER_MODEL` | `src/train_colab.py` | `1200` | Deterministic per-seed feature cap for large feature pools (`<=0` disables sampling). |
+| `FEATURE_SAMPLING_STRATEGY` | `src/train_colab.py` | `sharded_shuffle` | Feature subset strategy used across ensemble members. |
+| `FEATURE_SAMPLING_MASTER_SEED` | `src/train_colab.py` | `0` | Master seed for deterministic sharded feature assignment across models. |
+| `USE_INT8_PARQUET` | `src/train_colab.py`, `src/inference.py` | `false` | Prefer Numerai int8 parquet variants when available, with automatic fallback to float parquet. |
+| `LOAD_BACKEND` | `src/train_colab.py` | `polars` | Dataset loading backend selector (currently `polars`). |
+| `LOAD_MODE` | `src/train_colab.py` | `in_memory` | Dataset loading mode selector (currently `in_memory`). |
 | `LGBM_NUM_LEAVES` | `src/train_colab.py` | `128` | LightGBM leaves for CPU-focused Numerai baseline. |
 | `LGBM_MIN_DATA_IN_LEAF` | `src/train_colab.py` | `1000` | LightGBM minimum data in leaf for regularization on large tabular training sets. |
 | `LGBM_FEATURE_FRACTION` | `src/train_colab.py` | `0.7` | Column subsampling fraction per tree. |
@@ -125,6 +131,7 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `BLEND_USE_WINDOWS` | `src/train_colab.py` | `WALKFORWARD_MAX_WINDOWS` | Number of most recent walk-forward windows used for PR3 blend tuning. |
 | `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v5.2` | Override NumerAI dataset version for live data. |
 | `ALLOW_DATASET_VERSION_MISMATCH` | `src/inference.py` | `false` | Explicitly allow inference with manifest/runtime dataset-version mismatch (not recommended). |
+| `ALLOW_FEATURES_BY_MODEL_MISSING` | `src/inference.py` | `false` | Allow legacy artifacts without `features_by_model.json` (otherwise inference hard-fails). |
 | `MIN_PRED_STD` | `src/inference.py` | `1e-6` | Drift guard minimum prediction standard deviation threshold. |
 | `MAX_ABS_EXPOSURE` | `src/inference.py` | `0.30` | Drift guard maximum absolute feature exposure threshold. |
 
@@ -132,7 +139,7 @@ This repository implements a **remote-train / auto-submit** pipeline:
 
 - **Drift guard aborts**: inference exits with `DRIFT_GUARD_ABORT` when predictions are invalid (NaN/Inf/all-zero), too flat (`MIN_PRED_STD`), too exposed (`MAX_ABS_EXPOSURE`), or required live columns are missing.
 - **Missing NumerAI model**: if `NUMERAI_MODEL_NAME` does not exist in your NumerAI account, inference fails before upload and reports available model names.
-- **Incomplete W&B artifact**: if the downloaded `prod` model artifact is missing `features.json` or the model file referenced by `train_manifest.json`, inference aborts with a required-files error.
+- **Incomplete W&B artifact**: if the downloaded `prod` model artifact is missing required feature metadata (`features_union.json` / `features.json`, `features_by_model.json`) or a model file referenced by `train_manifest.json`, inference aborts with a required-files error.
 - **Failure visibility**: when the workflow fails, drift-guard handling opens a GitHub issue so failures are visible asynchronously.
 
 ## Local checks

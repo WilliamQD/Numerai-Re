@@ -17,7 +17,6 @@ from typing import Any
 
 import lightgbm as lgb
 import numpy as np
-import pandas as pd
 import polars as pl
 import wandb
 from numerapi import NumerAPI
@@ -25,7 +24,9 @@ from numerapi import NumerAPI
 from bench_matrix_builder import align_bench_to_ids
 from benchmarks import download_benchmark_parquets, load_benchmark_frame
 from config import TrainRuntimeConfig, _optional_bool_env
+from data_loading import load_split_numpy
 from era_utils import era_to_int
+from feature_sampling import features_hash, sample_features_for_seed
 from numerai_metrics import mean_per_era_numerai_corr
 from postprocess import PostprocessConfig, apply_postprocess
 from tune_blend import BlendTuneReport, tune_blend_on_windows
@@ -33,9 +34,11 @@ from walkforward import build_windows
 
 
 FEATURES_FILENAME = "features.json"
+FEATURES_UNION_FILENAME = "features_union.json"
+FEATURES_BY_MODEL_FILENAME = "features_by_model.json"
 MANIFEST_FILENAME = "train_manifest.json"
 CHECKPOINT_FILENAME = "training_checkpoint.json"
-ARTIFACT_SCHEMA_VERSION = 3
+ARTIFACT_SCHEMA_VERSION = 4
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 
@@ -144,9 +147,10 @@ def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Pa
     validation_path = version_data_dir / "validation.parquet"
     features_path = version_data_dir / FEATURES_FILENAME
 
+    datasets = napi.list_datasets()
     required_files = (
-        (f"{cfg.dataset_version}/train.parquet", train_path),
-        (f"{cfg.dataset_version}/validation.parquet", validation_path),
+        (_resolve_dataset_path(datasets, cfg.dataset_version, ("train",), cfg.use_int8_parquet), train_path),
+        (_resolve_dataset_path(datasets, cfg.dataset_version, ("validation",), cfg.use_int8_parquet), validation_path),
         (f"{cfg.dataset_version}/{FEATURES_FILENAME}", features_path),
     )
     for dataset_path, local_path in required_files:
@@ -158,6 +162,36 @@ def _download_with_numerapi(cfg: TrainRuntimeConfig, data_dir: Path) -> tuple[Pa
 
     benchmark_paths = download_benchmark_parquets(napi, cfg.dataset_version, version_data_dir / "benchmarks")
     return train_path, validation_path, features_path, benchmark_paths
+
+
+def _resolve_dataset_path(
+    datasets: list[str],
+    dataset_version: str,
+    split_tokens: tuple[str, ...],
+    use_int8: bool,
+) -> str:
+    prefix = dataset_version.lower() + "/"
+    token_set = tuple(token.lower() for token in split_tokens)
+    parquet_matches = [
+        ds
+        for ds in datasets
+        if ds.lower().startswith(prefix)
+        and ds.lower().endswith(".parquet")
+        and all(token in ds.lower() for token in token_set)
+    ]
+    if not use_int8:
+        default_match = next((ds for ds in parquet_matches if "int8" not in ds.lower()), None)
+        return default_match or f"{dataset_version}/{'_'.join(split_tokens)}.parquet"
+    int8_match = next((ds for ds in parquet_matches if "int8" in ds.lower()), None)
+    if int8_match:
+        return int8_match
+    logger.warning(
+        "phase=int8_dataset_fallback split=%s dataset_version=%s reason=int8_not_found",
+        "_".join(split_tokens),
+        dataset_version,
+    )
+    default_match = next((ds for ds in parquet_matches if "int8" not in ds.lower()), None)
+    return default_match or f"{dataset_version}/{'_'.join(split_tokens)}.parquet"
 
 
 def _load_feature_list(features_path: Path, feature_set_name: str) -> list[str]:
@@ -179,20 +213,23 @@ def _load_feature_list(features_path: Path, feature_set_name: str) -> list[str]:
     return feature_list
 
 
-def _downcast_floats(lf: pl.LazyFrame) -> pl.LazyFrame:
-    schema = lf.collect_schema()
-    exprs = []
-    for col_name, dtype in schema.items():
-        if dtype == pl.Float64:
-            exprs.append(pl.col(col_name).cast(pl.Float32))
-        else:
-            exprs.append(pl.col(col_name))
-    return lf.select(exprs)
+def _write_features_mapping(path: Path, payload: dict[str, list[str]]) -> None:
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2))
+    tmp_path.replace(path)
 
 
-def _load_frame(path: Path, selected_cols: list[str]) -> pl.DataFrame:
-    lf = pl.scan_parquet(str(path)).select(selected_cols)
-    return _downcast_floats(lf).collect(streaming=True)
+def _load_features_mapping(path: Path) -> dict[str, list[str]]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"Invalid features mapping at {path}: expected object.")
+    normalized: dict[str, list[str]] = {}
+    for key, value in payload.items():
+        if isinstance(key, str) and isinstance(value, list) and all(isinstance(col, str) for col in value):
+            normalized[key] = value
+    return normalized
 
 
 def _checkpoint_dir(cfg: TrainRuntimeConfig) -> Path:
@@ -212,6 +249,9 @@ def _write_training_checkpoint(
         "feature_set": cfg.feature_set_name,
         "seeds": list(cfg.lgbm_seeds),
         "lgb_params": lgb_params,
+        "max_features_per_model": cfg.max_features_per_model,
+        "feature_sampling_strategy": cfg.feature_sampling_strategy,
+        "feature_sampling_master_seed": cfg.feature_sampling_master_seed,
         "completed_seeds": [int(member["seed"]) for member in members],
         "members": members,
     }
@@ -243,6 +283,9 @@ def _load_training_checkpoint(
         "feature_set": cfg.feature_set_name,
         "seeds": list(cfg.lgbm_seeds),
         "lgb_params": lgb_params,
+        "max_features_per_model": cfg.max_features_per_model,
+        "feature_sampling_strategy": cfg.feature_sampling_strategy,
+        "feature_sampling_master_seed": cfg.feature_sampling_master_seed,
     }
     for key, expected_value in expected_meta.items():
         if payload.get(key) != expected_value:
@@ -286,6 +329,9 @@ def _load_training_checkpoint(
             recommended_num_iteration = (
                 int(member["recommended_num_iteration"]) if member.get("recommended_num_iteration") is not None else None
             )
+            features_key = str(member["features_key"]) if member.get("features_key") is not None else model_file
+            n_features_used = int(member.get("n_features_used", 0))
+            member_features_hash = str(member.get("features_hash", ""))
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(f"Invalid checkpoint member schema in {checkpoint_path}: {member!r}") from exc
         if not model_file:
@@ -300,6 +346,9 @@ def _load_training_checkpoint(
                 "corr_scan_period": corr_scan_period,
                 "train_mode": train_mode,
                 "recommended_num_iteration": recommended_num_iteration,
+                "features_key": features_key,
+                "n_features_used": n_features_used,
+                "features_hash": member_features_hash,
             }
         )
     return normalized_members
@@ -359,55 +408,47 @@ def init_wandb_run(cfg: TrainRuntimeConfig, lgb_params: dict[str, object]) -> An
             "bench_neutralize_prop_grid": list(cfg.bench_neutralize_prop_grid),
             "blend_tune_seed": cfg.blend_tune_seed,
             "blend_use_windows": cfg.blend_use_windows,
+            "max_features_per_model": cfg.max_features_per_model,
+            "feature_sampling_strategy": cfg.feature_sampling_strategy,
+            "feature_sampling_master_seed": cfg.feature_sampling_master_seed,
+            "use_int8_parquet": cfg.use_int8_parquet,
+            "load_backend": cfg.load_backend,
+            "load_mode": cfg.load_mode,
             **lgb_params,
         },
     )
 
 
-def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
-    train_path, validation_path, features_path, benchmark_paths = _download_with_numerapi(cfg, cfg.numerai_data_dir)
-    feature_cols = _load_feature_list(features_path, cfg.feature_set_name)
+def load_train_valid_frames(
+    cfg: TrainRuntimeConfig,
+    train_path: Path,
+    validation_path: Path,
+    benchmark_paths: dict[str, Path],
+    feature_cols: list[str],
+) -> LoadedData:
     logger.info(
-        "phase=datasets_downloaded dataset_version=%s data_dir=%s n_features=%d",
+        "phase=feature_subset_loading dataset_version=%s data_dir=%s n_features=%d",
         cfg.dataset_version,
         cfg.numerai_data_dir,
         len(feature_cols),
     )
+    x_train, y_train, era_train, id_train = load_split_numpy(
+        train_path, feature_cols, cfg.id_col, cfg.era_col, cfg.target_col
+    )
+    x_valid, y_valid, era_valid, id_valid = load_split_numpy(
+        validation_path, feature_cols, cfg.id_col, cfg.era_col, cfg.target_col
+    )
+    logger.info("phase=frame_loaded split=train rows=%d cols=%d", x_train.shape[0], x_train.shape[1] + 3)
+    logger.info("phase=frame_loaded split=validation rows=%d cols=%d", x_valid.shape[0], x_valid.shape[1] + 3)
 
-    selected_cols = feature_cols + [cfg.target_col, cfg.era_col, cfg.id_col]
-    train_df = _load_frame(train_path, selected_cols)
-    valid_df = _load_frame(validation_path, selected_cols)
-    train_rows_before = train_df.height
-    valid_rows_before = valid_df.height
-    train_df = train_df.filter(pl.col(cfg.target_col).is_not_null())
-    valid_df = valid_df.filter(pl.col(cfg.target_col).is_not_null())
-    if train_df.height != train_rows_before or valid_df.height != valid_rows_before:
-        logger.info(
-            "phase=frame_filtered dropped_unlabeled_train=%d dropped_unlabeled_validation=%d",
-            train_rows_before - train_df.height,
-            valid_rows_before - valid_df.height,
-        )
-
-    logger.info("phase=frame_loaded split=train rows=%d cols=%d", train_df.height, train_df.width)
-    logger.info("phase=frame_loaded split=validation rows=%d cols=%d", valid_df.height, valid_df.width)
-
-    x_train = train_df.select(feature_cols).to_pandas()
-    y_train = train_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
-    era_train = train_df.get_column(cfg.era_col).to_numpy()
-    id_train = train_df.get_column(cfg.id_col).to_numpy()
-    x_valid = valid_df.select(feature_cols).to_pandas()
-    y_valid = valid_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
-    era_valid = valid_df.get_column(cfg.era_col).to_numpy()
-    id_valid = valid_df.get_column(cfg.id_col).to_numpy()
-    all_df = pl.concat([train_df, valid_df], how="vertical")
-    x_all = all_df.select(feature_cols).to_pandas()
-    y_all = all_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
-    era_all = all_df.get_column(cfg.era_col).to_numpy()
-    id_all = all_df.get_column(cfg.id_col).to_numpy()
+    x_all = np.concatenate([x_train, x_valid], axis=0)
+    y_all = np.concatenate([y_train, y_valid], axis=0)
+    era_all = np.concatenate([era_train, era_valid], axis=0)
+    id_all = np.concatenate([id_train, id_valid], axis=0)
     era_all_int = era_to_int(era_all)
 
     order = np.argsort(era_all_int, kind="stable")
-    x_all = x_all.iloc[order].reset_index(drop=True)
+    x_all = x_all[order]
     y_all = y_all[order]
     era_all = era_all[order]
     era_all_int = era_all_int[order]
@@ -426,7 +467,7 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
     if bench_cols_all != bench_cols:
         raise RuntimeError(f"Benchmark column mismatch after concat: expected {bench_cols}, got {bench_cols_all}.")
 
-    del train_df, valid_df, all_df, bench_train_df, bench_valid_df, bench_all_df
+    del bench_train_df, bench_valid_df, bench_all_df
     gc.collect()
 
     return LoadedData(
@@ -602,9 +643,9 @@ def evaluate_walkforward(cfg: TrainRuntimeConfig, lgb_params: dict[str, object],
         if train_idx.size == 0 or valid_idx.size == 0:
             continue
 
-        x_train = data.x_all.iloc[train_idx].reset_index(drop=True)
+        x_train = data.x_all[train_idx]
         y_train = data.y_all[train_idx]
-        x_valid = data.x_all.iloc[valid_idx].reset_index(drop=True)
+        x_valid = data.x_all[valid_idx]
         y_valid = data.y_all[valid_idx]
         era_valid = data.era_all[valid_idx]
 
@@ -750,9 +791,9 @@ def _collect_blend_windows(
         if train_idx.size == 0 or valid_idx.size == 0:
             continue
 
-        x_train = data.x_all.iloc[train_idx].reset_index(drop=True)
+        x_train = data.x_all[train_idx]
         y_train = data.y_all[train_idx]
-        x_valid = data.x_all.iloc[valid_idx].reset_index(drop=True)
+        x_valid = data.x_all[valid_idx]
         y_valid = data.y_all[valid_idx]
         era_valid = data.era_all[valid_idx]
         bench_valid = data.bench_all[valid_idx]
@@ -810,7 +851,8 @@ def save_and_log_artifact(
     cfg: TrainRuntimeConfig,
     run: Any,
     lgb_params: dict[str, object],
-    data: LoadedData,
+    feature_cols: list[str],
+    features_by_model: dict[str, list[str]],
     members: list[dict[str, object]],
     checkpoint_dir: Path,
     wf_report: WalkforwardReport | None = None,
@@ -828,11 +870,16 @@ def save_and_log_artifact(
         model_paths.append(model_path)
     valid_corr_values = [float(member.get("best_valid_corr", np.nan)) for member in members]
 
+    features_union = sorted({col for cols in features_by_model.values() for col in cols}) or list(feature_cols)
     features_out = out_dir / FEATURES_FILENAME
+    features_union_out = out_dir / FEATURES_UNION_FILENAME
+    features_by_model_out = out_dir / FEATURES_BY_MODEL_FILENAME
     manifest_out = out_dir / MANIFEST_FILENAME
     wf_windows_out = out_dir / "walkforward_windows.json"
     postprocess_out = out_dir / "postprocess_config.json"
-    features_out.write_text(json.dumps(data.feature_cols, indent=2))
+    features_out.write_text(json.dumps(features_union, indent=2))
+    features_union_out.write_text(json.dumps(features_union, indent=2))
+    features_by_model_out.write_text(json.dumps(features_by_model, indent=2))
     wf_windows_payload = wf_report.windows if wf_report is not None else []
     wf_windows_out.write_text(json.dumps(wf_windows_payload, indent=2))
     postprocess_out.write_text(json.dumps(postprocess_config or {}, indent=2))
@@ -867,10 +914,15 @@ def save_and_log_artifact(
                 "best_iteration_mean": float(np.mean([float(member["best_iteration"]) for member in members])),
                 "best_valid_rmse_mean": float(np.mean([float(member["best_valid_rmse"]) for member in members])),
                 "best_valid_corr_mean": float(np.nanmean(valid_corr_values)),
-                "n_features": len(data.feature_cols),
+                "n_features": len(features_union),
                 "model_name": cfg.model_name,
                 "model_file": str(members[0]["model_file"]),
                 "model_files": [path.name for path in model_paths],
+                "features_union_file": FEATURES_UNION_FILENAME,
+                "features_by_model_file": FEATURES_BY_MODEL_FILENAME,
+                "max_features_per_model": cfg.max_features_per_model,
+                "sampling_strategy": cfg.feature_sampling_strategy,
+                "sampling_master_seed": cfg.feature_sampling_master_seed,
                 "lgb_params": lgb_params,
                 "walkforward": walkforward_payload,
                 "postprocess": postprocess_config,
@@ -883,6 +935,8 @@ def save_and_log_artifact(
     for model_path in model_paths:
         artifact.add_file(str(model_path), name=model_path.name)
     artifact.add_file(str(features_out), name=FEATURES_FILENAME)
+    artifact.add_file(str(features_union_out), name=FEATURES_UNION_FILENAME)
+    artifact.add_file(str(features_by_model_out), name=FEATURES_BY_MODEL_FILENAME)
     artifact.add_file(str(manifest_out), name=MANIFEST_FILENAME)
     artifact.add_file(str(wf_windows_out), name=wf_windows_out.name)
     artifact.add_file(str(postprocess_out), name=postprocess_out.name)
@@ -919,15 +973,14 @@ def _build_synthetic_dry_run_data(cfg: TrainRuntimeConfig, scratch_dir: Path) ->
         axis=1,
     ).astype(np.float32)
     bench_cols = ["benchmark_1", "benchmark_2"]
-    x_all = pd.DataFrame(x_all_np, columns=feature_cols)
-
-    x_train = x_all.iloc[:n_train].reset_index(drop=True)
+    x_all = x_all_np
+    x_train = x_all[:n_train]
     y_train = y_all[:n_train]
     era_train = eras[:n_train]
     id_train = ids[:n_train]
     bench_train = bench_all[:n_train]
 
-    x_valid = x_all.iloc[n_train:].reset_index(drop=True)
+    x_valid = x_all[n_train:]
     y_valid = y_all[n_train:]
     era_valid = eras[n_train:]
     id_valid = ids[n_train:]
@@ -959,6 +1012,7 @@ def _build_synthetic_dry_run_data(cfg: TrainRuntimeConfig, scratch_dir: Path) ->
 def train_dry_run() -> None:
     cfg = TrainRuntimeConfig(
         dataset_version=os.getenv("NUMERAI_DATASET_VERSION", "v5.2").strip() or "v5.2",
+        feature_set_name="medium",
         wandb_api_key="dry-run",
         lgbm_seeds=(42,),
         num_boost_round=30,
@@ -979,6 +1033,7 @@ def train_dry_run() -> None:
     model_filename = f"{cfg.model_name}_seed{cfg.lgbm_seeds[0]}_dry_run.txt"
     model_path = out_dir / model_filename
     fit_result.model.save_model(str(model_path), num_iteration=fit_result.best_iteration)
+    features_by_model = {model_filename: list(data.feature_cols)}
 
     post_cfg = PostprocessConfig(
         schema_version=1,
@@ -993,6 +1048,8 @@ def train_dry_run() -> None:
     _ = apply_postprocess(pred_raw=pred_raw, era=data.era_valid, cfg=post_cfg, bench=data.bench_valid)
 
     (out_dir / FEATURES_FILENAME).write_text(json.dumps(data.feature_cols, indent=2))
+    (out_dir / FEATURES_UNION_FILENAME).write_text(json.dumps(data.feature_cols, indent=2))
+    (out_dir / FEATURES_BY_MODEL_FILENAME).write_text(json.dumps(features_by_model, indent=2))
     (out_dir / "postprocess_config.json").write_text(
         json.dumps(
             {
@@ -1019,6 +1076,11 @@ def train_dry_run() -> None:
                 "model_name": cfg.model_name,
                 "model_file": model_filename,
                 "model_files": [model_filename],
+                "features_union_file": FEATURES_UNION_FILENAME,
+                "features_by_model_file": FEATURES_BY_MODEL_FILENAME,
+                "max_features_per_model": cfg.max_features_per_model,
+                "sampling_strategy": cfg.feature_sampling_strategy,
+                "sampling_master_seed": cfg.feature_sampling_master_seed,
             },
             indent=2,
         )
@@ -1039,7 +1101,34 @@ def train() -> None:
 
     lgb_params = _resolve_lgb_params(cfg)
     run = init_wandb_run(cfg, lgb_params)
-    data = load_train_valid_frames(cfg)
+    train_path, validation_path, features_path, benchmark_paths = _download_with_numerapi(cfg, cfg.numerai_data_dir)
+    feature_pool = _load_feature_list(features_path, cfg.feature_set_name)
+    logger.info(
+        "phase=datasets_downloaded dataset_version=%s data_dir=%s n_features=%d",
+        cfg.dataset_version,
+        cfg.numerai_data_dir,
+        len(feature_pool),
+    )
+    sampled_features_by_seed = {
+        int(seed): sample_features_for_seed(
+            feature_pool=feature_pool,
+            seed=int(seed),
+            model_index=idx,
+            n_models=len(cfg.lgbm_seeds),
+            max_features_per_model=int(cfg.max_features_per_model),
+            master_seed=int(cfg.feature_sampling_master_seed),
+            strategy=cfg.feature_sampling_strategy,
+        )
+        for idx, seed in enumerate(cfg.lgbm_seeds)
+    }
+    base_seed = int(cfg.walkforward_tune_seed if cfg.walkforward_tune_seed is not None else cfg.lgbm_seeds[0])
+    base_data = load_train_valid_frames(
+        cfg,
+        train_path=train_path,
+        validation_path=validation_path,
+        benchmark_paths=benchmark_paths,
+        feature_cols=sampled_features_by_seed[base_seed],
+    )
     wf_report: WalkforwardReport | None = None
     blend_report: BlendTuneReport | None = None
     checkpoint_walkforward: dict[str, object] | None = None
@@ -1050,16 +1139,16 @@ def train() -> None:
         "bench_neutralize_prop": 0.0,
         "payout_weight_corr": float(cfg.payout_weight_corr),
         "payout_weight_bmc": float(cfg.payout_weight_bmc),
-        "bench_cols_used": data.bench_cols,
+        "bench_cols_used": base_data.bench_cols,
         "feature_neutralize_prop": 0.0,
         "feature_neutralize_n_features": 0,
         "feature_neutralize_seed": 0,
     }
     recommended_iter: int | None = None
     if cfg.walkforward_enabled:
-        wf_report = evaluate_walkforward(cfg, lgb_params, data)
+        wf_report = evaluate_walkforward(cfg, lgb_params, base_data)
         recommended_iter = int(wf_report.recommended_num_iteration)
-        blend_windows = _collect_blend_windows(cfg, lgb_params, data, wf_report)
+        blend_windows = _collect_blend_windows(cfg, lgb_params, base_data, wf_report)
         blend_report = tune_blend_on_windows(
             windows=blend_windows,
             alpha_grid=cfg.blend_alpha_grid,
@@ -1082,7 +1171,7 @@ def train() -> None:
             "bench_neutralize_prop": float(blend_report.best_prop),
             "payout_weight_corr": float(cfg.payout_weight_corr),
             "payout_weight_bmc": float(cfg.payout_weight_bmc),
-            "bench_cols_used": data.bench_cols,
+            "bench_cols_used": base_data.bench_cols,
             "feature_neutralize_prop": 0.0,
             "feature_neutralize_n_features": 0,
             "feature_neutralize_seed": 0,
@@ -1095,9 +1184,13 @@ def train() -> None:
             wf_report.sharpe,
             wf_report.hit_rate,
         )
+    del base_data
+    gc.collect()
+
     checkpoint_dir = _checkpoint_dir(cfg)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / CHECKPOINT_FILENAME
+    features_by_model_path = checkpoint_dir / FEATURES_BY_MODEL_FILENAME
 
     members = _load_training_checkpoint(
         checkpoint_path,
@@ -1107,6 +1200,7 @@ def train() -> None:
         expected_postprocess=checkpoint_postprocess,
     )
     completed_seeds = {int(member["seed"]) for member in members}
+    features_by_model = _load_features_mapping(features_by_model_path)
     if completed_seeds:
         logger.info(
             "phase=checkpoint_loaded checkpoint_path=%s completed_seeds=%s",
@@ -1118,11 +1212,24 @@ def train() -> None:
         model_path = checkpoint_dir / str(member["model_file"])
         if not model_path.exists():
             raise RuntimeError(f"Checkpoint references missing model file: {model_path}")
+        features_key = str(member.get("features_key") or member["model_file"])
+        if features_key not in features_by_model:
+            seed = int(member["seed"])
+            features_by_model[features_key] = sampled_features_by_seed[seed]
+    _write_features_mapping(features_by_model_path, features_by_model)
 
     for seed in cfg.lgbm_seeds:
         if seed in completed_seeds:
             logger.info("phase=seed_skipped_already_completed seed=%d", seed)
             continue
+        seed_features = sampled_features_by_seed[int(seed)]
+        data = load_train_valid_frames(
+            cfg,
+            train_path=train_path,
+            validation_path=validation_path,
+            benchmark_paths=benchmark_paths,
+            feature_cols=seed_features,
+        )
         if cfg.walkforward_enabled:
             if recommended_iter is None:
                 raise RuntimeError("Walk-forward is enabled but recommended_num_iteration is not available.")
@@ -1131,7 +1238,7 @@ def train() -> None:
                 lgb_params=lgb_params,
                 x=data.x_all,
                 y=data.y_all,
-                feature_cols=data.feature_cols,
+                feature_cols=seed_features,
                 seed=seed,
                 num_boost_round=recommended_iter,
             )
@@ -1145,6 +1252,9 @@ def train() -> None:
                 "corr_scan_period": cfg.corr_scan_period,
                 "train_mode": "walkforward_final",
                 "recommended_num_iteration": recommended_iter,
+                "features_key": model_file,
+                "n_features_used": len(seed_features),
+                "features_hash": features_hash(seed_features),
             }
             wandb.log(
                 {
@@ -1163,10 +1273,17 @@ def train() -> None:
                 "best_valid_rmse": fit_result.best_valid_rmse,
                 "best_valid_corr": fit_result.best_valid_corr,
                 "corr_scan_period": cfg.corr_scan_period,
+                "features_key": model_file,
+                "n_features_used": len(seed_features),
+                "features_hash": features_hash(seed_features),
             }
             _log_seed_observability(fit_result)
         members.append(member)
         completed_seeds.add(seed)
+        features_by_model[model_file] = seed_features
+        _write_features_mapping(features_by_model_path, features_by_model)
+        del data
+        gc.collect()
         _write_training_checkpoint(
             checkpoint_path,
             cfg,
@@ -1210,6 +1327,7 @@ def train() -> None:
             "best_valid_corr_max": float(np.nanmax(valid_corr_values)),
             "best_valid_corr_best_seed": int(best_corr_member["seed"]),
             "n_models": len(members),
+            "n_features_union": len({col for cols in features_by_model.values() for col in cols}),
             "ensemble_members": summary_table,
         }
     )
@@ -1218,7 +1336,8 @@ def train() -> None:
         cfg,
         run,
         lgb_params,
-        data,
+        feature_pool,
+        features_by_model,
         members,
         checkpoint_dir,
         wf_report=wf_report,
