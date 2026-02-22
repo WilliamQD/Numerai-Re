@@ -1,0 +1,37 @@
+name: Pipeline Check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-train.txt
+          pip install -r requirements-infer.txt
+
+      - name: Training dry-run
+        run: TRAIN_DRY_RUN=true python src/train_colab.py
+
+      - name: Validate pipeline
+        run: python -m tools.validate_pipeline --dry-run
+
+      - name: Inference dry-run
+        run: INFER_DRY_RUN=true python src/inference.py
