@@ -12,7 +12,13 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from config import InferenceRuntimeConfig
-from inference import RANK_01_EPSILON, DriftGuardError, _download_live_benchmark_dataset, apply_quality_gates
+from inference import (
+    RANK_01_EPSILON,
+    DriftGuardError,
+    _download_live_benchmark_dataset,
+    _download_live_dataset,
+    apply_quality_gates,
+)
 from postprocess import PostprocessConfig, apply_postprocess
 
 
@@ -92,6 +98,13 @@ class PostprocessInferenceTests(unittest.TestCase):
         resolved = _download_live_benchmark_dataset(napi, "v5.2", out_path)
         self.assertEqual(resolved, out_path)
         self.assertEqual(napi.downloaded, ("v5.2/live_benchmark_models.parquet", str(out_path)))
+
+    def test_download_live_dataset_prefers_int8_when_available(self) -> None:
+        napi = _FakeNumerAPI(["v5.2/live.parquet", "v5.2/live_int8.parquet"])
+        out_path = Path("live.parquet")
+        resolved = _download_live_dataset(napi, "v5.2", out_path, use_int8_parquet=True)
+        self.assertEqual(resolved, out_path)
+        self.assertEqual(napi.downloaded, ("v5.2/live_int8.parquet", str(out_path)))
 
 
 if __name__ == "__main__":

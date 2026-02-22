@@ -47,6 +47,12 @@ class TrainRuntimeConfig:
     bench_neutralize_prop_grid: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     blend_tune_seed: int | None = None
     blend_use_windows: int | None = None
+    max_features_per_model: int = 1200
+    feature_sampling_strategy: str = "sharded_shuffle"
+    feature_sampling_master_seed: int = 0
+    use_int8_parquet: bool = False
+    load_backend: str = "polars"
+    load_mode: str = "in_memory"
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -164,6 +170,13 @@ class TrainRuntimeConfig:
             ),
             blend_tune_seed=blend_tune_seed,
             blend_use_windows=blend_use_windows,
+            max_features_per_model=int(os.getenv("MAX_FEATURES_PER_MODEL", "1200")),
+            feature_sampling_strategy=os.getenv("FEATURE_SAMPLING_STRATEGY", "sharded_shuffle").strip()
+            or "sharded_shuffle",
+            feature_sampling_master_seed=int(os.getenv("FEATURE_SAMPLING_MASTER_SEED", "0")),
+            use_int8_parquet=_optional_bool_env("USE_INT8_PARQUET", default=False),
+            load_backend=os.getenv("LOAD_BACKEND", "polars").strip().lower() or "polars",
+            load_mode=os.getenv("LOAD_MODE", "in_memory").strip().lower() or "in_memory",
         )
 
 
@@ -181,6 +194,7 @@ class InferenceRuntimeConfig:
     exposure_sample_rows: int = 200_000
     exposure_sample_seed: int = 0
     allow_dataset_version_mismatch: bool = False
+    allow_features_by_model_missing: bool = False
 
     @classmethod
     def from_env(cls) -> "InferenceRuntimeConfig":
@@ -216,6 +230,7 @@ class InferenceRuntimeConfig:
             exposure_sample_rows=exposure_sample_rows,
             exposure_sample_seed=int(os.getenv("EXPOSURE_SAMPLE_SEED", "0")),
             allow_dataset_version_mismatch=_optional_bool_env("ALLOW_DATASET_VERSION_MISMATCH", default=False),
+            allow_features_by_model_missing=_optional_bool_env("ALLOW_FEATURES_BY_MODEL_MISSING", default=False),
         )
 
 
