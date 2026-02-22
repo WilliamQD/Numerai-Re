@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,9 +43,14 @@ class TrainRuntimeConfig:
             raise RuntimeError(
                 "NUMERAI_PUBLIC_ID and NUMERAI_SECRET_KEY must be set together for authenticated training downloads."
             )
+        dataset_version = os.getenv("NUMERAI_DATASET_VERSION", "v5.2").strip() or "v5.2"
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", dataset_version):
+            raise ValueError("Invalid NUMERAI_DATASET_VERSION. Use only letters, numbers, dot, underscore, or hyphen.")
+        if ".." in dataset_version or dataset_version.startswith((".", "-")):
+            raise ValueError("Invalid NUMERAI_DATASET_VERSION.")
 
         return cls(
-            dataset_version=os.getenv("NUMERAI_DATASET_VERSION", "v5.2"),
+            dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "medium"),
             model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v52"),
             wandb_project=os.getenv("WANDB_PROJECT", "numerai-mlops"),
