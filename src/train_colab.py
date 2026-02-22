@@ -21,6 +21,7 @@ import wandb
 from numerapi import NumerAPI
 
 from config import TrainRuntimeConfig
+from numerai_metrics import mean_per_era_numerai_corr
 
 
 FEATURES_FILENAME = "features.json"
@@ -38,8 +39,10 @@ class LoadedData:
     feature_cols: list[str]
     x_train: Any
     y_train: np.ndarray
+    era_train: np.ndarray
     x_valid: Any
     y_valid: np.ndarray
+    era_valid: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -48,8 +51,11 @@ class FitResult:
     model: lgb.Booster
     best_iteration: int
     best_valid_rmse: float
+    best_valid_corr: float
     train_rmse_curve: list[float]
     valid_rmse_curve: list[float]
+    valid_corr_curve: list[float]
+    corr_scan_iters: list[int]
 
 
 @dataclass(frozen=True)
@@ -220,6 +226,8 @@ def _load_training_checkpoint(
             model_file = str(member["model_file"])
             best_iteration = int(member["best_iteration"])
             best_valid_rmse = float(member["best_valid_rmse"])
+            best_valid_corr = float(member.get("best_valid_corr", np.nan))
+            corr_scan_period = int(member["corr_scan_period"]) if member.get("corr_scan_period") is not None else None
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(f"Invalid checkpoint member schema in {checkpoint_path}: {member!r}") from exc
         if not model_file:
@@ -230,6 +238,8 @@ def _load_training_checkpoint(
                 "model_file": model_file,
                 "best_iteration": best_iteration,
                 "best_valid_rmse": best_valid_rmse,
+                "best_valid_corr": best_valid_corr,
+                "corr_scan_period": corr_scan_period,
             }
         )
     return normalized_members
@@ -241,11 +251,19 @@ def _log_seed_observability(result: FitResult) -> None:
         {
             f"seed/{seed_label}/best_iteration": result.best_iteration,
             f"seed/{seed_label}/best_valid_rmse": result.best_valid_rmse,
+            f"seed/{seed_label}/best_valid_corr": result.best_valid_corr,
             f"seed/{seed_label}/learning_curve": wandb.plot.line_series(
                 xs=list(range(1, len(result.train_rmse_curve) + 1)),
                 ys=[result.train_rmse_curve, result.valid_rmse_curve],
                 keys=["train_rmse", "valid_rmse"],
                 title=f"Seed {seed_label} RMSE",
+                xname="iteration",
+            ),
+            f"seed/{seed_label}/corr_curve": wandb.plot.line_series(
+                xs=result.corr_scan_iters,
+                ys=[result.valid_corr_curve],
+                keys=["valid_corr_mean_per_era"],
+                title=f"Seed {seed_label} Numerai CORR (scan)",
                 xname="iteration",
             ),
         }
@@ -267,6 +285,9 @@ def init_wandb_run(cfg: TrainRuntimeConfig, lgb_params: dict[str, object]) -> An
             "num_boost_round": cfg.num_boost_round,
             "early_stopping_rounds": cfg.early_stopping_rounds,
             "lgbm_seeds": list(cfg.lgbm_seeds),
+            "corr_scan_period": cfg.corr_scan_period,
+            "corr_scan_max_iters": cfg.corr_scan_max_iters,
+            "select_best_by": cfg.select_best_by,
             **lgb_params,
         },
     )
@@ -291,13 +312,23 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
 
     x_train = train_df.select(feature_cols).to_pandas()
     y_train = train_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
+    era_train = train_df.get_column(cfg.era_col).to_numpy()
     x_valid = valid_df.select(feature_cols).to_pandas()
     y_valid = valid_df.get_column(cfg.target_col).to_numpy().astype(np.float32)
+    era_valid = valid_df.get_column(cfg.era_col).to_numpy()
 
     del train_df, valid_df
     gc.collect()
 
-    return LoadedData(feature_cols=feature_cols, x_train=x_train, y_train=y_train, x_valid=x_valid, y_valid=y_valid)
+    return LoadedData(
+        feature_cols=feature_cols,
+        x_train=x_train,
+        y_train=y_train,
+        era_train=era_train,
+        x_valid=x_valid,
+        y_valid=y_valid,
+        era_valid=era_valid,
+    )
 
 
 def fit_lgbm(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: LoadedData, seed: int) -> FitResult:
@@ -349,14 +380,48 @@ def fit_lgbm(cfg: TrainRuntimeConfig, lgb_params: dict[str, object], data: Loade
     best_rmse = float(evals_result["valid"]["rmse"][max(0, best_iter - 1)])
     train_curve = [float(v) for v in evals_result["train"]["rmse"]]
     valid_curve = [float(v) for v in evals_result["valid"]["rmse"]]
-    logger.info("phase=model_trained seed=%d best_iteration=%d best_valid_rmse=%.6f", seed, best_iter, best_rmse)
+    max_iter = int(model.current_iteration())
+    if cfg.corr_scan_max_iters is not None:
+        max_iter = min(max_iter, int(cfg.corr_scan_max_iters))
+    max_iter = max(1, max_iter)
+    scan_period = int(cfg.corr_scan_period)
+    corr_scan_iters = list(range(scan_period, max_iter + 1, scan_period))
+    if not corr_scan_iters or corr_scan_iters[-1] != max_iter:
+        corr_scan_iters.append(max_iter)
+
+    best_corr = float("-inf")
+    best_corr_iter = corr_scan_iters[0]
+    corr_curve: list[float] = []
+    for i in corr_scan_iters:
+        preds = model.predict(data.x_valid, num_iteration=i)
+        corr_i = mean_per_era_numerai_corr(preds, data.y_valid, data.era_valid)
+        corr_curve.append(float(corr_i))
+        if corr_i > best_corr:
+            best_corr = float(corr_i)
+            best_corr_iter = int(i)
+
+    selected_best_iter = best_corr_iter if cfg.select_best_by == "corr" else best_iter
+    logger.info(
+        "phase=model_trained seed=%d best_iteration_rmse=%d best_iteration_corr=%d selected_best_iteration=%d "
+        "best_valid_rmse=%.6f best_valid_corr=%.6f select_best_by=%s",
+        seed,
+        best_iter,
+        best_corr_iter,
+        selected_best_iter,
+        best_rmse,
+        best_corr,
+        cfg.select_best_by,
+    )
     return FitResult(
         seed=seed,
         model=model,
-        best_iteration=best_iter,
+        best_iteration=selected_best_iter,
         best_valid_rmse=best_rmse,
+        best_valid_corr=best_corr,
         train_rmse_curve=train_curve,
         valid_rmse_curve=valid_curve,
+        valid_corr_curve=corr_curve,
+        corr_scan_iters=corr_scan_iters,
     )
 
 
@@ -378,6 +443,7 @@ def save_and_log_artifact(
         if not model_path.exists():
             raise RuntimeError(f"Missing checkpointed model file: {model_path}")
         model_paths.append(model_path)
+    valid_corr_values = [float(member.get("best_valid_corr", np.nan)) for member in members]
 
     features_out = out_dir / FEATURES_FILENAME
     manifest_out = out_dir / MANIFEST_FILENAME
@@ -397,6 +463,7 @@ def save_and_log_artifact(
                 "members": members,
                 "best_iteration_mean": float(np.mean([float(member["best_iteration"]) for member in members])),
                 "best_valid_rmse_mean": float(np.mean([float(member["best_valid_rmse"]) for member in members])),
+                "best_valid_corr_mean": float(np.nanmean(valid_corr_values)),
                 "n_features": len(data.feature_cols),
                 "model_name": cfg.model_name,
                 "model_file": str(members[0]["model_file"]),
@@ -460,12 +527,14 @@ def train() -> None:
             continue
         fit_result = fit_lgbm(cfg, lgb_params, data, seed)
         model_file = f"{cfg.model_name}_seed{seed}.txt"
-        fit_result.model.save_model(str(checkpoint_dir / model_file))
+        fit_result.model.save_model(str(checkpoint_dir / model_file), num_iteration=fit_result.best_iteration)
         member = {
             "seed": seed,
             "model_file": model_file,
             "best_iteration": fit_result.best_iteration,
             "best_valid_rmse": fit_result.best_valid_rmse,
+            "best_valid_corr": fit_result.best_valid_corr,
+            "corr_scan_period": cfg.corr_scan_period,
         }
         members.append(member)
         completed_seeds.add(seed)
@@ -484,18 +553,27 @@ def train() -> None:
             f"Incomplete checkpoint state: expected {len(cfg.lgbm_seeds)} seeds, got {len(members)} members."
         )
 
-    summary_table = wandb.Table(columns=["seed", "best_iteration", "best_valid_rmse", "model_file"])
+    summary_table = wandb.Table(columns=["seed", "best_iteration", "best_valid_rmse", "best_valid_corr", "model_file"])
     for member in members:
         summary_table.add_data(
             int(member["seed"]),
             int(member["best_iteration"]),
             float(member["best_valid_rmse"]),
+            float(member.get("best_valid_corr", np.nan)),
             str(member["model_file"]),
         )
+    valid_corr_values = [float(member.get("best_valid_corr", np.nan)) for member in members]
+    best_corr_member = max(
+        members,
+        key=lambda member: float(member.get("best_valid_corr", float("-inf"))),
+    )
     wandb.log(
         {
             "best_iteration_mean": float(np.mean([float(member["best_iteration"]) for member in members])),
             "best_valid_rmse_mean": float(np.mean([float(member["best_valid_rmse"]) for member in members])),
+            "best_valid_corr_mean": float(np.nanmean(valid_corr_values)),
+            "best_valid_corr_max": float(np.nanmax(valid_corr_values)),
+            "best_valid_corr_best_seed": int(best_corr_member["seed"]),
             "n_models": len(members),
             "ensemble_members": summary_table,
         }

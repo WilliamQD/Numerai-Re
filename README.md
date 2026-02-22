@@ -113,6 +113,9 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `LGBM_LEARNING_RATE` | `src/train_colab.py` | `0.02` | Learning rate for boosting. |
 | `LGBM_NUM_BOOST_ROUND` | `src/train_colab.py` | `5000` | Number of boosting rounds (CPU baseline target range: 3000-6000). |
 | `LGBM_EARLY_STOPPING_ROUNDS` | `src/train_colab.py` | `300` | Early stopping rounds (CPU baseline target range: 200-400). |
+| `CORR_SCAN_PERIOD` | `src/train_colab.py` | `100` | Iteration interval used to scan validation Numerai CORR for checkpoint selection/logging. |
+| `CORR_SCAN_MAX_ITERS` | `src/train_colab.py` | unset | Optional cap on max iteration to scan for validation Numerai CORR. |
+| `SELECT_BEST_BY` | `src/train_colab.py` | `corr` | Checkpoint selection metric (`corr` or `rmse`); default uses Numerai CORR. |
 | `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v5.2` | Override NumerAI dataset version for live data. |
 | `ALLOW_DATASET_VERSION_MISMATCH` | `src/inference.py` | `false` | Explicitly allow inference with manifest/runtime dataset-version mismatch (not recommended). |
 | `MIN_PRED_STD` | `src/inference.py` | `1e-6` | Drift guard minimum prediction standard deviation threshold. |

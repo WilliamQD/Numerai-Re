@@ -31,6 +31,9 @@ class TrainRuntimeConfig:
     lgbm_bagging_freq: int = 1
     lgbm_min_data_in_leaf: int = 1000
     lgbm_seeds: tuple[int, ...] = (42, 1337, 2026)
+    corr_scan_period: int = 100
+    corr_scan_max_iters: int | None = None
+    select_best_by: str = "corr"
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -66,6 +69,21 @@ class TrainRuntimeConfig:
         if not lgbm_seeds:
             raise ValueError("Invalid LGBM_SEEDS. Provide at least one integer seed.")
 
+        corr_scan_period = int(os.getenv("CORR_SCAN_PERIOD", "100"))
+        if corr_scan_period <= 0:
+            raise ValueError("Invalid CORR_SCAN_PERIOD. Expected positive integer.")
+
+        corr_scan_max_iters_raw = os.getenv("CORR_SCAN_MAX_ITERS")
+        corr_scan_max_iters: int | None = None
+        if corr_scan_max_iters_raw is not None and corr_scan_max_iters_raw.strip():
+            corr_scan_max_iters = int(corr_scan_max_iters_raw.strip())
+            if corr_scan_max_iters <= 0:
+                raise ValueError("Invalid CORR_SCAN_MAX_ITERS. Expected positive integer when set.")
+
+        select_best_by = (os.getenv("SELECT_BEST_BY", "corr").strip().lower() or "corr")
+        if select_best_by not in {"rmse", "corr"}:
+            raise ValueError("Invalid SELECT_BEST_BY. Expected one of: rmse, corr.")
+
         return cls(
             dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "medium"),
@@ -86,6 +104,9 @@ class TrainRuntimeConfig:
             lgbm_bagging_freq=int(os.getenv("LGBM_BAGGING_FREQ", "1")),
             lgbm_min_data_in_leaf=int(os.getenv("LGBM_MIN_DATA_IN_LEAF", "1000")),
             lgbm_seeds=lgbm_seeds,
+            corr_scan_period=corr_scan_period,
+            corr_scan_max_iters=corr_scan_max_iters,
+            select_best_by=select_best_by,
         )
 
 
