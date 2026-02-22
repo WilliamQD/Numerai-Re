@@ -377,8 +377,16 @@ def load_train_valid_frames(cfg: TrainRuntimeConfig) -> LoadedData:
     selected_cols = feature_cols + [cfg.target_col, cfg.era_col, cfg.id_col]
     train_df = _load_frame(train_path, selected_cols)
     valid_df = _load_frame(validation_path, selected_cols)
+    train_rows_before = train_df.height
+    valid_rows_before = valid_df.height
     train_df = train_df.filter(pl.col(cfg.target_col).is_not_null())
     valid_df = valid_df.filter(pl.col(cfg.target_col).is_not_null())
+    if train_df.height != train_rows_before or valid_df.height != valid_rows_before:
+        logger.info(
+            "phase=frame_filtered dropped_unlabeled_train=%d dropped_unlabeled_validation=%d",
+            train_rows_before - train_df.height,
+            valid_rows_before - valid_df.height,
+        )
 
     logger.info("phase=frame_loaded split=train rows=%d cols=%d", train_df.height, train_df.width)
     logger.info("phase=frame_loaded split=validation rows=%d cols=%d", valid_df.height, valid_df.width)
