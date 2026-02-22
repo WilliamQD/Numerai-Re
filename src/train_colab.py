@@ -226,9 +226,8 @@ def _load_training_checkpoint(
             model_file = str(member["model_file"])
             best_iteration = int(member["best_iteration"])
             best_valid_rmse = float(member["best_valid_rmse"])
-            best_valid_corr = (
-                float(member["best_valid_corr"]) if member.get("best_valid_corr") is not None else float("nan")
-            )
+            best_valid_corr = float(member.get("best_valid_corr", np.nan))
+            corr_scan_period = int(member["corr_scan_period"]) if member.get("corr_scan_period") is not None else None
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(f"Invalid checkpoint member schema in {checkpoint_path}: {member!r}") from exc
         if not model_file:
@@ -240,6 +239,7 @@ def _load_training_checkpoint(
                 "best_iteration": best_iteration,
                 "best_valid_rmse": best_valid_rmse,
                 "best_valid_corr": best_valid_corr,
+                "corr_scan_period": corr_scan_period,
             }
         )
     return normalized_members
@@ -443,6 +443,7 @@ def save_and_log_artifact(
         if not model_path.exists():
             raise RuntimeError(f"Missing checkpointed model file: {model_path}")
         model_paths.append(model_path)
+    valid_corr_values = [float(member.get("best_valid_corr", np.nan)) for member in members]
 
     features_out = out_dir / FEATURES_FILENAME
     manifest_out = out_dir / MANIFEST_FILENAME
@@ -462,7 +463,7 @@ def save_and_log_artifact(
                 "members": members,
                 "best_iteration_mean": float(np.mean([float(member["best_iteration"]) for member in members])),
                 "best_valid_rmse_mean": float(np.mean([float(member["best_valid_rmse"]) for member in members])),
-                "best_valid_corr_mean": float(np.nanmean([float(member.get("best_valid_corr", np.nan)) for member in members])),
+                "best_valid_corr_mean": float(np.nanmean(valid_corr_values)),
                 "n_features": len(data.feature_cols),
                 "model_name": cfg.model_name,
                 "model_file": str(members[0]["model_file"]),

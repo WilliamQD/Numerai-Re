@@ -4,7 +4,7 @@ import numpy as np
 
 try:
     from scipy.stats import norm, rankdata
-except Exception as exc:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
     raise ImportError("scipy is required for numerai_metrics (rankdata + norm.ppf). Install scipy.") from exc
 
 
