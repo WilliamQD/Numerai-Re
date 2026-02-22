@@ -9,6 +9,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,15 +17,17 @@ from typing import Any
 
 import lightgbm as lgb
 import numpy as np
+import pandas as pd
 import polars as pl
 import wandb
 from numerapi import NumerAPI
 
 from bench_matrix_builder import align_bench_to_ids
 from benchmarks import download_benchmark_parquets, load_benchmark_frame
-from config import TrainRuntimeConfig
+from config import TrainRuntimeConfig, _optional_bool_env
 from era_utils import era_to_int
 from numerai_metrics import mean_per_era_numerai_corr
+from postprocess import PostprocessConfig, apply_postprocess
 from tune_blend import BlendTuneReport, tune_blend_on_windows
 from walkforward import build_windows
 
@@ -883,6 +886,136 @@ def save_and_log_artifact(
     return SavedArtifact(model_paths=model_paths, features_path=features_out, manifest_path=manifest_out)
 
 
+def _build_synthetic_dry_run_data(cfg: TrainRuntimeConfig, scratch_dir: Path) -> LoadedData:
+    rng = np.random.default_rng(7)
+    feature_cols = [f"feature_{idx:02d}" for idx in range(8)]
+    features_path = scratch_dir / FEATURES_FILENAME
+    features_path.write_text(json.dumps({"feature_sets": {"medium": feature_cols}}, indent=2))
+    feature_cols = _load_feature_list(features_path, cfg.feature_set_name)
+
+    n_train, n_valid = 120, 60
+    total_rows = n_train + n_valid
+    eras = np.array([f"era{(idx // 10) + 1}" for idx in range(total_rows)], dtype=object)
+    ids = np.array([f"dry_{idx:04d}" for idx in range(total_rows)], dtype=object)
+    x_all_np = rng.normal(size=(total_rows, len(feature_cols))).astype(np.float32)
+    y_all = (
+        (0.55 * x_all_np[:, 0]) - (0.25 * x_all_np[:, 1]) + (0.10 * x_all_np[:, 2]) + rng.normal(0.0, 0.03, total_rows)
+    ).astype(np.float32)
+    bench_all = np.stack(
+        (
+            x_all_np[:, 0] + rng.normal(0.0, 0.02, total_rows),
+            x_all_np[:, 1] + rng.normal(0.0, 0.02, total_rows),
+        ),
+        axis=1,
+    ).astype(np.float32)
+    bench_cols = ["benchmark_1", "benchmark_2"]
+    x_all = pd.DataFrame(x_all_np, columns=feature_cols)
+
+    x_train = x_all.iloc[:n_train].reset_index(drop=True)
+    y_train = y_all[:n_train]
+    era_train = eras[:n_train]
+    id_train = ids[:n_train]
+    bench_train = bench_all[:n_train]
+
+    x_valid = x_all.iloc[n_train:].reset_index(drop=True)
+    y_valid = y_all[n_train:]
+    era_valid = eras[n_train:]
+    id_valid = ids[n_train:]
+    bench_valid = bench_all[n_train:]
+
+    era_all_int = era_to_int(eras)
+    return LoadedData(
+        feature_cols=feature_cols,
+        x_train=x_train,
+        y_train=y_train,
+        era_train=era_train,
+        id_train=id_train,
+        bench_train=bench_train,
+        x_valid=x_valid,
+        y_valid=y_valid,
+        era_valid=era_valid,
+        id_valid=id_valid,
+        bench_valid=bench_valid,
+        x_all=x_all,
+        y_all=y_all,
+        era_all=eras,
+        era_all_int=era_all_int,
+        id_all=ids,
+        bench_all=bench_all,
+        bench_cols=bench_cols,
+    )
+
+
+def train_dry_run() -> None:
+    cfg = TrainRuntimeConfig(
+        dataset_version=os.getenv("NUMERAI_DATASET_VERSION", "v5.2").strip() or "v5.2",
+        wandb_api_key="dry-run",
+        lgbm_seeds=(42,),
+        num_boost_round=30,
+        early_stopping_rounds=10,
+        walkforward_enabled=False,
+    )
+    lgb_params = _resolve_lgb_params(cfg)
+    scratch_dir = Path("artifacts") / "_dry_run"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    data = _build_synthetic_dry_run_data(cfg, scratch_dir)
+    windows = build_windows(data.era_all_int, chunk_size=6, purge_eras=1)
+    if not windows:
+        raise RuntimeError("TRAIN_DRY_RUN failed to build walk-forward windows.")
+
+    fit_result = fit_lgbm(cfg, lgb_params, data, seed=cfg.lgbm_seeds[0])
+    out_dir = Path("artifacts")
+    out_dir.mkdir(exist_ok=True)
+    model_filename = f"{cfg.model_name}_seed{cfg.lgbm_seeds[0]}_dry_run.txt"
+    model_path = out_dir / model_filename
+    fit_result.model.save_model(str(model_path), num_iteration=fit_result.best_iteration)
+
+    post_cfg = PostprocessConfig(
+        schema_version=1,
+        submission_transform="rank_01",
+        blend_alpha=0.7,
+        bench_neutralize_prop=0.3,
+        payout_weight_corr=cfg.payout_weight_corr,
+        payout_weight_bmc=cfg.payout_weight_bmc,
+        bench_cols_used=tuple(data.bench_cols),
+    )
+    pred_raw = fit_result.model.predict(data.x_valid, num_iteration=fit_result.best_iteration).astype(np.float32, copy=False)
+    _ = apply_postprocess(pred_raw=pred_raw, era=data.era_valid, cfg=post_cfg, bench=data.bench_valid)
+
+    (out_dir / FEATURES_FILENAME).write_text(json.dumps(data.feature_cols, indent=2))
+    (out_dir / "postprocess_config.json").write_text(
+        json.dumps(
+            {
+                "schema_version": post_cfg.schema_version,
+                "submission_transform": post_cfg.submission_transform,
+                "blend_alpha": post_cfg.blend_alpha,
+                "bench_neutralize_prop": post_cfg.bench_neutralize_prop,
+                "payout_weight_corr": post_cfg.payout_weight_corr,
+                "payout_weight_bmc": post_cfg.payout_weight_bmc,
+                "bench_cols_used": list(post_cfg.bench_cols_used),
+                "feature_neutralize_prop": post_cfg.feature_neutralize_prop,
+                "feature_neutralize_n_features": post_cfg.feature_neutralize_n_features,
+                "feature_neutralize_seed": post_cfg.feature_neutralize_seed,
+            },
+            indent=2,
+        )
+    )
+    (out_dir / MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "dataset_version": cfg.dataset_version,
+                "feature_set": cfg.feature_set_name,
+                "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+                "model_name": cfg.model_name,
+                "model_file": model_filename,
+                "model_files": [model_filename],
+            },
+            indent=2,
+        )
+    )
+    print(f"TRAIN_DRY_RUN_OK windows={len(windows)} artifact_dir={out_dir}")
+
+
 def train() -> None:
     cfg = TrainRuntimeConfig.from_env()
     logger.info(
@@ -1086,4 +1219,7 @@ def train() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-    train()
+    if _optional_bool_env("TRAIN_DRY_RUN", default=False):
+        train_dry_run()
+    else:
+        train()

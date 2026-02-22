@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -13,7 +14,7 @@ import pandas as pd
 import wandb
 from numerapi import NumerAPI
 
-from config import InferenceRuntimeConfig
+from config import InferenceRuntimeConfig, _optional_bool_env
 from postprocess import PostprocessConfig, apply_postprocess
 
 
@@ -63,13 +64,9 @@ def _resolve_manifest(manifest_path: Path, model_name: str) -> tuple[dict, list[
     return manifest, default_file
 
 
-def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[list[lgb.Booster], list[str], dict, PostprocessConfig]:
-    ref = f"{cfg.wandb_entity}/{cfg.wandb_project}/{cfg.wandb_model_name}:prod"
-
-    api = wandb.Api()
-    artifact = api.artifact(ref, type="model")
-    root = Path(artifact.download(root="artifacts"))
-
+def _load_artifact_from_root(
+    root: Path, cfg: InferenceRuntimeConfig, artifact_ref: str
+) -> tuple[list[lgb.Booster], list[str], dict, PostprocessConfig]:
     features_path = root / FEATURES_FILENAME
     manifest_path = root / MANIFEST_FILENAME
     postprocess_path = root / POSTPROCESS_FILENAME
@@ -92,7 +89,7 @@ def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[list[lgb.Booster], lis
     models = [lgb.Booster(model_file=str(root / model_filename)) for model_filename in model_filenames]
     logger.info(
         "phase=artifact_downloaded artifact_ref=%s selected_dataset_version=%s n_features=%d n_models=%d",
-        ref,
+        artifact_ref,
         manifest.get("dataset_version", "unknown"),
         len(feature_cols),
         len(models),
@@ -105,6 +102,14 @@ def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[list[lgb.Booster], lis
         post_cfg.feature_neutralize_prop,
     )
     return models, feature_cols, manifest, post_cfg
+
+
+def load_prod_model(cfg: InferenceRuntimeConfig) -> tuple[list[lgb.Booster], list[str], dict, PostprocessConfig]:
+    ref = f"{cfg.wandb_entity}/{cfg.wandb_project}/{cfg.wandb_model_name}:prod"
+    api = wandb.Api()
+    artifact = api.artifact(ref, type="model")
+    root = Path(artifact.download(root="artifacts"))
+    return _load_artifact_from_root(root, cfg, ref)
 
 
 def _download_live_benchmark_dataset(napi: NumerAPI, dataset_version: str, out_path: Path) -> Path:
@@ -153,7 +158,111 @@ def apply_quality_gates(
         )
 
 
+def _build_mock_artifact_dir(root: Path, dataset_version: str, model_name: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    feature_cols = [f"feature_{idx:02d}" for idx in range(6)]
+    rng = np.random.default_rng(9)
+    x = pd.DataFrame(rng.normal(size=(90, len(feature_cols))), columns=feature_cols)
+    y = (0.6 * x[feature_cols[0]] - 0.2 * x[feature_cols[1]] + rng.normal(0.0, 0.02, len(x))).astype(np.float32)
+    booster = lgb.train(
+        params={"objective": "regression", "metric": "rmse", "learning_rate": 0.1, "num_leaves": 16, "verbosity": -1},
+        train_set=lgb.Dataset(x, label=y, feature_name=feature_cols),
+        num_boost_round=20,
+    )
+    model_file = f"{model_name}_dry_run.txt"
+    booster.save_model(str(root / model_file))
+    (root / FEATURES_FILENAME).write_text(json.dumps(feature_cols, indent=2))
+    (root / MANIFEST_FILENAME).write_text(
+        json.dumps(
+            {
+                "dataset_version": dataset_version,
+                "feature_set": "medium",
+                "artifact_schema_version": 3,
+                "model_file": model_file,
+                "model_files": [model_file],
+            },
+            indent=2,
+        )
+    )
+    (root / POSTPROCESS_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "submission_transform": "rank_01",
+                "blend_alpha": 0.7,
+                "bench_neutralize_prop": 0.3,
+                "payout_weight_corr": 0.75,
+                "payout_weight_bmc": 2.25,
+                "bench_cols_used": ["benchmark_1", "benchmark_2"],
+                "feature_neutralize_prop": 0.0,
+                "feature_neutralize_n_features": 0,
+                "feature_neutralize_seed": 0,
+            },
+            indent=2,
+        )
+    )
+
+
+def inference_dry_run() -> int:
+    dataset_version = os.getenv("NUMERAI_DATASET_VERSION", "v5.2").strip() or "v5.2"
+    cfg = InferenceRuntimeConfig(
+        numerai_public_id="dry-run",
+        numerai_secret_key="dry-run",
+        numerai_model_name="dry-run",
+        wandb_entity="dry-run",
+        wandb_project="dry-run",
+        dataset_version=dataset_version,
+        wandb_model_name="dry_run_model",
+        min_pred_std=1e-8,
+        max_abs_exposure=1.0,
+        exposure_sample_rows=1000,
+    )
+    artifact_root = Path("artifacts") / "mock_prod"
+    _build_mock_artifact_dir(artifact_root, cfg.dataset_version, cfg.wandb_model_name)
+    models, feature_cols, manifest, post_cfg = _load_artifact_from_root(artifact_root, cfg, "local/mock:dry-run")
+
+    rng = np.random.default_rng(13)
+    rows = 120
+    live_df = pd.DataFrame(rng.normal(size=(rows, len(feature_cols))), columns=feature_cols)
+    live_df.insert(0, "id", [f"id_{idx:04d}" for idx in range(rows)])
+    live_df.insert(1, "era", [f"era{(idx // 15) + 1}" for idx in range(rows)])
+    live_path = Path("live.parquet")
+    live_df.to_parquet(live_path, index=False)
+    live_id = live_df["id"].to_numpy()
+    bench_df = pd.DataFrame(
+        {
+            "id": live_id,
+            "benchmark_1": rng.normal(size=rows),
+            "benchmark_2": rng.normal(size=rows),
+        }
+    )
+    live_bench_path = Path("live_benchmark_models.parquet")
+    bench_df.to_parquet(live_bench_path, index=False)
+
+    x_live = live_df[feature_cols]
+    model_preds = [model.predict(x_live).astype(np.float32) for model in models]
+    bench_cols_used = list(post_cfg.bench_cols_used)
+    bench_aligned = pd.read_parquet(live_bench_path, columns=["id", *bench_cols_used]).set_index("id").loc[live_id].to_numpy(
+        dtype=np.float32, copy=False
+    )
+    pred_raw = np.mean(np.vstack(model_preds), axis=0, dtype=np.float32)
+    pred_final = apply_postprocess(
+        pred_raw=pred_raw,
+        era=live_df["era"].to_numpy(),
+        cfg=post_cfg,
+        bench=bench_aligned,
+        features=None,
+    )
+    apply_quality_gates(x_live, pred_final, cfg, submission_transform=post_cfg.submission_transform)
+    submission = pd.DataFrame({"id": live_id, "prediction": pred_final})
+    submission.to_csv("submission.csv", index=False)
+    print(f"INFER_DRY_RUN_OK rows={len(submission)} manifest_dataset={manifest.get('dataset_version')}")
+    return 0
+
+
 def main() -> int:
+    if _optional_bool_env("INFER_DRY_RUN", default=False):
+        return inference_dry_run()
     cfg = InferenceRuntimeConfig.from_env()
     logger.info(
         "phase=config_loaded dataset_version=%s model_name=%s numerai_model_name=%s",
@@ -183,7 +292,16 @@ def main() -> int:
     _download_live_benchmark_dataset(napi, cfg.dataset_version, live_bench_path)
     logger.info("phase=datasets_downloaded dataset_version=%s live_path=%s", cfg.dataset_version, live_path)
 
-    live_df = pd.read_parquet(live_path)
+    selected_live_cols = sorted(set(feature_cols + ["era", "id"]))
+    try:
+        live_df = pd.read_parquet(live_path, columns=selected_live_cols)
+    except (ValueError, KeyError) as exc:
+        logger.warning(
+            "phase=live_parquet_column_fallback selected_cols=%s reason=%s",
+            selected_live_cols,
+            exc,
+        )
+        live_df = pd.read_parquet(live_path)
     logger.info(
         "phase=frame_loaded split=live rows=%d cols=%d n_features=%d selected_dataset_version=%s",
         len(live_df),
