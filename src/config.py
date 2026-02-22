@@ -14,6 +14,7 @@ class TrainRuntimeConfig:
     feature_set_name: str = "medium"
     target_col: str = "target"
     era_col: str = "era"
+    id_col: str = "id"
     model_name: str = "lgbm_numerai_v52"
     num_boost_round: int = 5000
     early_stopping_rounds: int = 300
@@ -40,6 +41,12 @@ class TrainRuntimeConfig:
     walkforward_max_windows: int = 4
     walkforward_tune_seed: int | None = None
     walkforward_log_models: bool = False
+    payout_weight_corr: float = 0.75
+    payout_weight_bmc: float = 2.25
+    blend_alpha_grid: tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+    bench_neutralize_prop_grid: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+    blend_tune_seed: int | None = None
+    blend_use_windows: int | None = None
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -107,9 +114,18 @@ class TrainRuntimeConfig:
         if walkforward_tune_seed not in lgbm_seeds:
             raise ValueError("Invalid WALKFORWARD_TUNE_SEED. Expected a value from LGBM_SEEDS.")
 
+        blend_tune_seed_raw = os.getenv("BLEND_TUNE_SEED")
+        blend_tune_seed = int(blend_tune_seed_raw.strip()) if blend_tune_seed_raw else walkforward_tune_seed
+        if blend_tune_seed not in lgbm_seeds:
+            raise ValueError("Invalid BLEND_TUNE_SEED. Expected a value from LGBM_SEEDS.")
+        blend_use_windows = int(os.getenv("BLEND_USE_WINDOWS", str(walkforward_max_windows)))
+        if blend_use_windows <= 0:
+            raise ValueError("Invalid BLEND_USE_WINDOWS. Expected positive integer.")
+
         return cls(
             dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "medium"),
+            id_col=os.getenv("NUMERAI_ID_COL", "id").strip() or "id",
             model_name=os.getenv("WANDB_MODEL_NAME", "lgbm_numerai_v52"),
             wandb_project=os.getenv("WANDB_PROJECT", "numerai-mlops"),
             wandb_entity=os.getenv("WANDB_ENTITY"),
@@ -136,6 +152,18 @@ class TrainRuntimeConfig:
             walkforward_max_windows=walkforward_max_windows,
             walkforward_tune_seed=walkforward_tune_seed,
             walkforward_log_models=_optional_bool_env("WALKFORWARD_LOG_MODELS", default=False),
+            payout_weight_corr=float(os.getenv("PAYOUT_WEIGHT_CORR", "0.75")),
+            payout_weight_bmc=float(os.getenv("PAYOUT_WEIGHT_BMC", "2.25")),
+            blend_alpha_grid=_optional_float_list_env(
+                "BLEND_ALPHA_GRID",
+                default=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+            ),
+            bench_neutralize_prop_grid=_optional_float_list_env(
+                "BENCH_NEUTRALIZE_PROP_GRID",
+                default=(0.0, 0.25, 0.5, 0.75, 1.0),
+            ),
+            blend_tune_seed=blend_tune_seed,
+            blend_use_windows=blend_use_windows,
         )
 
 
@@ -202,3 +230,16 @@ def _optional_bool_env(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise RuntimeError(f"Invalid {name} value {value!r}: expected one of true/false, yes/no, on/off, 1/0.")
+
+
+def _optional_float_list_env(name: str, default: tuple[float, ...]) -> tuple[float, ...]:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = tuple(float(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid {name} value {value!r}: expected comma-separated floats.") from exc
+    if not parsed:
+        raise RuntimeError(f"Invalid {name}: provide at least one float value.")
+    return parsed

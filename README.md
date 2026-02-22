@@ -116,6 +116,13 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `CORR_SCAN_PERIOD` | `src/train_colab.py` | `100` | Iteration interval used to scan validation Numerai CORR for checkpoint selection/logging. |
 | `CORR_SCAN_MAX_ITERS` | `src/train_colab.py` | unset | Optional cap on max iteration to scan for validation Numerai CORR. |
 | `SELECT_BEST_BY` | `src/train_colab.py` | `corr` | Checkpoint selection metric (`corr` or `rmse`); default uses Numerai CORR. |
+| `NUMERAI_ID_COL` | `src/train_colab.py` | `id` | Row identifier column used to align benchmark-model parquet predictions. |
+| `PAYOUT_WEIGHT_CORR` | `src/train_colab.py` | `0.75` | Payout-score CORR weight used in PR3 blend tuning (`wC*corr + wM*bmc`). |
+| `PAYOUT_WEIGHT_BMC` | `src/train_colab.py` | `2.25` | Payout-score BMC weight used in PR3 blend tuning (`wC*corr + wM*bmc`). |
+| `BLEND_ALPHA_GRID` | `src/train_colab.py` | `0.0,0.1,0.2,...,1.0` | Comma-separated blend alpha candidates for raw vs. benchmark-neutralized predictions. |
+| `BENCH_NEUTRALIZE_PROP_GRID` | `src/train_colab.py` | `0.0,0.25,0.5,0.75,1.0` | Comma-separated benchmark neutralization strengths searched during blend tuning. |
+| `BLEND_TUNE_SEED` | `src/train_colab.py` | `WALKFORWARD_TUNE_SEED` | Seed used for blend tuning over walk-forward windows. |
+| `BLEND_USE_WINDOWS` | `src/train_colab.py` | `WALKFORWARD_MAX_WINDOWS` | Number of most recent walk-forward windows used for PR3 blend tuning. |
 | `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v5.2` | Override NumerAI dataset version for live data. |
 | `ALLOW_DATASET_VERSION_MISMATCH` | `src/inference.py` | `false` | Explicitly allow inference with manifest/runtime dataset-version mismatch (not recommended). |
 | `MIN_PRED_STD` | `src/inference.py` | `1e-6` | Drift guard minimum prediction standard deviation threshold. |
