@@ -38,6 +38,7 @@ FEATURES_UNION_FILENAME = "features_union.json"
 FEATURES_BY_MODEL_FILENAME = "features_by_model.json"
 MANIFEST_FILENAME = "train_manifest.json"
 CHECKPOINT_FILENAME = "training_checkpoint.json"
+# v4 adds features_union.json + features_by_model.json for per-model feature subsets.
 ARTIFACT_SCHEMA_VERSION = 4
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
@@ -232,6 +233,13 @@ def _load_features_mapping(path: Path) -> dict[str, list[str]]:
     return normalized
 
 
+def _member_features_key(member: dict[str, object]) -> str:
+    features_key = member.get("features_key")
+    if isinstance(features_key, str) and features_key:
+        return features_key
+    return str(member["model_file"])
+
+
 def _checkpoint_dir(cfg: TrainRuntimeConfig) -> Path:
     return cfg.numerai_data_dir / cfg.dataset_version / "checkpoints" / cfg.model_name
 
@@ -329,7 +337,7 @@ def _load_training_checkpoint(
             recommended_num_iteration = (
                 int(member["recommended_num_iteration"]) if member.get("recommended_num_iteration") is not None else None
             )
-            features_key = str(member["features_key"]) if member.get("features_key") is not None else model_file
+            features_key = _member_features_key(member)
             n_features_used = int(member.get("n_features_used", 0))
             member_features_hash = str(member.get("features_hash", ""))
         except (KeyError, TypeError, ValueError) as exc:
@@ -871,13 +879,13 @@ def save_and_log_artifact(
     valid_corr_values = [float(member.get("best_valid_corr", np.nan)) for member in members]
 
     features_union = sorted({col for cols in features_by_model.values() for col in cols}) or list(feature_cols)
-    features_out = out_dir / FEATURES_FILENAME
+    features_legacy_out = out_dir / FEATURES_FILENAME
     features_union_out = out_dir / FEATURES_UNION_FILENAME
     features_by_model_out = out_dir / FEATURES_BY_MODEL_FILENAME
     manifest_out = out_dir / MANIFEST_FILENAME
     wf_windows_out = out_dir / "walkforward_windows.json"
     postprocess_out = out_dir / "postprocess_config.json"
-    features_out.write_text(json.dumps(features_union, indent=2))
+    features_legacy_out.write_text(json.dumps(features_union, indent=2))
     features_union_out.write_text(json.dumps(features_union, indent=2))
     features_by_model_out.write_text(json.dumps(features_by_model, indent=2))
     wf_windows_payload = wf_report.windows if wf_report is not None else []
@@ -934,7 +942,7 @@ def save_and_log_artifact(
     artifact = wandb.Artifact(name=cfg.model_name, type="model")
     for model_path in model_paths:
         artifact.add_file(str(model_path), name=model_path.name)
-    artifact.add_file(str(features_out), name=FEATURES_FILENAME)
+    artifact.add_file(str(features_legacy_out), name=FEATURES_FILENAME)
     artifact.add_file(str(features_union_out), name=FEATURES_UNION_FILENAME)
     artifact.add_file(str(features_by_model_out), name=FEATURES_BY_MODEL_FILENAME)
     artifact.add_file(str(manifest_out), name=MANIFEST_FILENAME)
@@ -947,7 +955,7 @@ def save_and_log_artifact(
         cfg.model_name,
         len(model_paths),
     )
-    return SavedArtifact(model_paths=model_paths, features_path=features_out, manifest_path=manifest_out)
+    return SavedArtifact(model_paths=model_paths, features_path=features_legacy_out, manifest_path=manifest_out)
 
 
 def _build_synthetic_dry_run_data(cfg: TrainRuntimeConfig, scratch_dir: Path) -> LoadedData:
@@ -1212,7 +1220,7 @@ def train() -> None:
         model_path = checkpoint_dir / str(member["model_file"])
         if not model_path.exists():
             raise RuntimeError(f"Checkpoint references missing model file: {model_path}")
-        features_key = str(member.get("features_key") or member["model_file"])
+        features_key = _member_features_key(member)
         if features_key not in features_by_model:
             seed = int(member["seed"])
             features_by_model[features_key] = sampled_features_by_seed[seed]

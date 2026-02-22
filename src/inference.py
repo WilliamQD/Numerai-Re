@@ -85,6 +85,7 @@ def _load_artifact_from_root(
     if missing_models:
         raise RuntimeError(f"Model artifact is missing model files: {missing_models}")
 
+    # Backward compatibility: older artifacts store union features in features.json only.
     feature_cols_path = features_union_path if features_union_path.exists() else features_path
     feature_cols = json.loads(feature_cols_path.read_text())
     if not isinstance(feature_cols, list) or not feature_cols or not all(isinstance(col, str) and col for col in feature_cols):
@@ -229,7 +230,7 @@ def _build_mock_artifact_dir(root: Path, dataset_version: str, model_name: str) 
             {
                 "dataset_version": dataset_version,
                 "feature_set": "medium",
-                "artifact_schema_version": 3,
+                "artifact_schema_version": 4,
                 "model_file": model_file,
                 "model_files": [model_file],
                 "features_union_file": FEATURES_UNION_FILENAME,
