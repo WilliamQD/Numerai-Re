@@ -47,4 +47,5 @@ jobs:
           WANDB_CANDIDATE_ALIAS: ${{ inputs.candidate_alias }}
           WANDB_PROD_ALIAS: ${{ inputs.prod_alias }}
           NUMERAI_DATASET_VERSION: ${{ inputs.dataset_version }}
-        run: python src/promote_model.py
+          PYTHONPATH: src
+        run: python -m numerai_re.cli.promote_model

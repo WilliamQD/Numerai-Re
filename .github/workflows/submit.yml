@@ -44,7 +44,8 @@ jobs:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
           WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
-        run: python src/inference.py
+          PYTHONPATH: src
+        run: python -m numerai_re.cli.inference
 
       - name: Open issue when drift guard aborts
         if: steps.infer.outcome == 'failure'

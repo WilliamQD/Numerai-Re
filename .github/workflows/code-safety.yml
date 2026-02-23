@@ -28,7 +28,7 @@ jobs:
           pip install ruff==0.9.10
 
       - name: Python compile checks
-        run: python -m py_compile src/train_colab.py src/inference.py src/config.py src/promote_model.py
+        run: python -m py_compile src/numerai_re/cli/train_colab.py src/numerai_re/cli/inference.py src/numerai_re/runtime/config.py src/numerai_re/cli/promote_model.py
 
       - name: Ruff lint
         run: ruff check src

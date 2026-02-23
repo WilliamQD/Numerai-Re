@@ -3,10 +3,10 @@
 Run from the repository root.
 
 ```bash
-python -c "import src.config, src.postprocess, src.train_colab, src.inference"
-python -m tools.validate_pipeline --dry-run
-TRAIN_DRY_RUN=true python src/train_colab.py
-INFER_DRY_RUN=true python src/inference.py
+PYTHONPATH=src python -c "import numerai_re.runtime.config, numerai_re.inference.postprocess, numerai_re.cli.train_colab, numerai_re.cli.inference"
+PYTHONPATH=src python -m tools.validate_pipeline --dry-run
+PYTHONPATH=src TRAIN_DRY_RUN=true python -m numerai_re.cli.train_colab
+PYTHONPATH=src INFER_DRY_RUN=true python -m numerai_re.cli.inference
 ```
 
 Notes:

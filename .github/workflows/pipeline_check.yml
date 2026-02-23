@@ -28,10 +28,10 @@ jobs:
           pip install -r requirements-infer.txt
 
       - name: Training dry-run
-        run: TRAIN_DRY_RUN=true python src/train_colab.py
+        run: PYTHONPATH=src TRAIN_DRY_RUN=true python -m numerai_re.cli.train_colab
 
       - name: Validate pipeline
-        run: python -m tools.validate_pipeline --dry-run
+        run: PYTHONPATH=src python -m tools.validate_pipeline --dry-run
 
       - name: Inference dry-run
-        run: INFER_DRY_RUN=true python src/inference.py
+        run: PYTHONPATH=src INFER_DRY_RUN=true python -m numerai_re.cli.inference

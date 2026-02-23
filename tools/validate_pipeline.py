@@ -12,7 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from artifact_contract import (  # noqa: E402
+from numerai_re.contracts.artifact_contract import (  # noqa: E402
     FEATURES_UNION_FILENAME,
     MANIFEST_FILENAME,
     POSTPROCESS_FILENAME,
@@ -96,7 +96,7 @@ def _validate_artifact_contract(artifact_dir: Path, expected_dataset_version: st
 
 
 def _validate_runtime_contract(failures: list[str]) -> None:
-    runtime_path = SRC / "inference_runtime.py"
+    runtime_path = SRC / "numerai_re" / "inference" / "inference_runtime.py"
     try:
         module = ast.parse(runtime_path.read_text())
     except SyntaxError as exc:
@@ -124,13 +124,13 @@ def _validate_runtime_contract(failures: list[str]) -> None:
 
 def _lint_sources(failures: list[str]) -> None:
     for path in (
-        SRC / "train_colab.py",
-        SRC / "training_pipeline.py",
-        SRC / "training_runtime.py",
-        SRC / "training_dry_run.py",
-        SRC / "inference.py",
-        SRC / "inference_runtime.py",
-        SRC / "postprocess.py",
+        SRC / "numerai_re" / "cli" / "train_colab.py",
+        SRC / "numerai_re" / "training" / "training_pipeline.py",
+        SRC / "numerai_re" / "training" / "training_runtime.py",
+        SRC / "numerai_re" / "training" / "training_dry_run.py",
+        SRC / "numerai_re" / "cli" / "inference.py",
+        SRC / "numerai_re" / "inference" / "inference_runtime.py",
+        SRC / "numerai_re" / "inference" / "postprocess.py",
     ):
         if not path.exists():
             continue
