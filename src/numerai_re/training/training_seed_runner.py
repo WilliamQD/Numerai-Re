@@ -81,6 +81,7 @@ def run_seed_training_loop(
             benchmark_paths=benchmark_paths,
             feature_cols=seed_features,
             feature_dtype_override=feature_dtype,
+            status=status,
         )
         if cfg.walkforward_enabled:
             if recommended_iter is None:

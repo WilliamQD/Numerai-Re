@@ -163,6 +163,10 @@ class TrainRuntimeConfig:
         if walkforward_num_boost_round <= 0:
             raise ValueError("Invalid WALKFORWARD_NUM_BOOST_ROUND. Expected positive integer.")
 
+        load_mode = os.getenv("LOAD_MODE", "in_memory").strip().lower() or "in_memory"
+        if load_mode not in {"in_memory", "cached"}:
+            raise ValueError("Invalid LOAD_MODE. Expected one of: in_memory, cached.")
+
         return cls(
             dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "all"),
@@ -212,7 +216,7 @@ class TrainRuntimeConfig:
             feature_sampling_master_seed=int(os.getenv("FEATURE_SAMPLING_MASTER_SEED", "0")),
             use_int8_parquet=_optional_bool_env("USE_INT8_PARQUET", default=True),
             load_backend=os.getenv("LOAD_BACKEND", "polars").strip().lower() or "polars",
-            load_mode=os.getenv("LOAD_MODE", "in_memory").strip().lower() or "in_memory",
+            load_mode=load_mode,
             bench_drop_sparse_columns=_optional_bool_env("BENCH_DROP_SPARSE_COLUMNS", default=True),
             bench_max_null_ratio_per_column=bench_max_null_ratio_per_column,
             bench_min_columns=bench_min_columns,

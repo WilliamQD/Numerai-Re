@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import time
 
 import lightgbm as lgb
 import numpy as np
@@ -346,6 +347,7 @@ def load_train_valid_frames(
 	feature_cols: list[str],
 	*,
 	feature_dtype_override: type | None = None,
+	status: RuntimeStatusReporter | None = None,
 ) -> LoadedData:
 	logger.info(
 		"phase=feature_subset_loading dataset_version=%s data_dir=%s n_features=%d",
@@ -358,6 +360,9 @@ def load_train_valid_frames(
 	)
 	logger.info("phase=feature_dtype_selected dtype=%s", np.dtype(feature_dtype).name)
 	use_cache = cfg.load_mode == "cached"
+	load_start = time.monotonic()
+	if status is not None:
+		status.update("data_load", step="train_split", cache=use_cache, force=True)
 
 	x_train, y_train, era_train, id_train = load_split_numpy(
 		train_path,
@@ -368,6 +373,16 @@ def load_train_valid_frames(
 		feature_dtype=feature_dtype,
 		use_cache=use_cache,
 	)
+	if status is not None:
+		status.update(
+			"data_load",
+			step="train_loaded",
+			rows=int(len(y_train)),
+			elapsed_s=f"{time.monotonic() - load_start:.1f}",
+			force=True,
+		)
+	if status is not None:
+		status.update("data_load", step="validation_split", cache=use_cache, force=True)
 	x_valid, y_valid, era_valid, id_valid = load_split_numpy(
 		validation_path,
 		feature_cols,
@@ -377,6 +392,14 @@ def load_train_valid_frames(
 		feature_dtype=feature_dtype,
 		use_cache=use_cache,
 	)
+	if status is not None:
+		status.update(
+			"data_load",
+			step="validation_loaded",
+			rows=int(len(y_valid)),
+			elapsed_s=f"{time.monotonic() - load_start:.1f}",
+			force=True,
+		)
 	n_train = len(y_train)
 	logger.info("phase=frame_loaded split=train rows=%d cols=%d", n_train, len(feature_cols) + 3)
 	logger.info("phase=frame_loaded split=validation rows=%d cols=%d", len(y_valid), len(feature_cols) + 3)

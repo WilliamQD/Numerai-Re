@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import time
 
 import numpy as np
 import polars as pl
@@ -94,13 +95,39 @@ def load_split_numpy(
         file under a ``_np_cache/`` sub-directory.  Speeds up session restarts
         at the cost of extra disk space.
     """
+    stage_start = time.monotonic()
     if use_cache:
         manifest_path = _cache_manifest_path(path, feature_cols, feature_dtype)
         if _cache_valid(path, manifest_path):
+            logger.info(
+                "phase=split_cache_hit path=%s feature_dtype=%s n_features=%d",
+                path,
+                np.dtype(feature_dtype).name,
+                len(feature_cols),
+            )
             return _load_from_cache(manifest_path)
+        logger.info(
+            "phase=split_cache_miss path=%s feature_dtype=%s n_features=%d",
+            path,
+            np.dtype(feature_dtype).name,
+            len(feature_cols),
+        )
 
     selected_cols = [*feature_cols, target_col, era_col, id_col]
+    logger.info(
+        "phase=split_scan_started path=%s feature_dtype=%s n_features=%d",
+        path,
+        np.dtype(feature_dtype).name,
+        len(feature_cols),
+    )
     frame = pl.scan_parquet(str(path)).select(selected_cols).collect(streaming=True)
+    logger.info(
+        "phase=split_scan_collected path=%s rows=%d cols=%d elapsed_s=%.1f",
+        path,
+        frame.height,
+        frame.width,
+        time.monotonic() - stage_start,
+    )
     frame = frame.filter(pl.col(target_col).is_not_null())
     if downcast:
         frame = frame.with_columns(pl.col(feature_cols).cast(_polars_dtype_for(feature_dtype), strict=False))
@@ -110,6 +137,13 @@ def load_split_numpy(
     row_id = frame.get_column(id_col).to_numpy()
     del frame
     gc.collect()
+    logger.info(
+        "phase=split_numpy_ready path=%s rows=%d n_features=%d elapsed_s=%.1f",
+        path,
+        len(y),
+        x.shape[1] if x.ndim > 1 else len(feature_cols),
+        time.monotonic() - stage_start,
+    )
 
     if use_cache:
         try:

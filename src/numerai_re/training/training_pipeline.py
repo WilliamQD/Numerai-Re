@@ -60,6 +60,13 @@ def train() -> None:
     lgb_params = resolve_lgb_params(cfg)
     run = init_wandb_run(cfg, lgb_params)
     status = RuntimeStatusReporter(logger=logger, interval_seconds=float(cfg.status_update_seconds), name="train")
+    logger.info(
+        "phase=runtime_io_config data_dir=%s load_mode=%s load_backend=%s status_update_seconds=%d",
+        cfg.numerai_data_dir,
+        cfg.load_mode,
+        cfg.load_backend,
+        cfg.status_update_seconds,
+    )
     train_path, validation_path, features_path, benchmark_paths, dataset_selection = download_with_numerapi(
         cfg,
         cfg.numerai_data_dir,
@@ -88,6 +95,7 @@ def train() -> None:
             benchmark_paths=benchmark_paths,
             feature_cols=sampled_features_by_seed[base_seed],
             feature_dtype_override=dataset_selection.feature_dtype,
+            status=status,
         )
     except BenchmarkAlignmentError as first_exc:
         logger.warning(
@@ -107,6 +115,7 @@ def train() -> None:
                 benchmark_paths=benchmark_paths,
                 feature_cols=sampled_features_by_seed[base_seed],
                 feature_dtype_override=dataset_selection.feature_dtype,
+                status=status,
             )
         except BenchmarkAlignmentError as second_exc:
             raise RuntimeError(

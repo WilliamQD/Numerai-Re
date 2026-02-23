@@ -69,6 +69,16 @@ class TrainRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(cfg.num_boost_round, 1500)
         self.assertEqual(cfg.walkforward_num_boost_round, 600)
 
+    def test_load_mode_accepts_cached(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key", "LOAD_MODE": "cached"}, clear=True):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertEqual(cfg.load_mode, "cached")
+
+    def test_load_mode_rejects_unknown_value(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key", "LOAD_MODE": "cache"}, clear=True):
+            with self.assertRaises(ValueError):
+                TrainRuntimeConfig.from_env()
+
     def test_benchmark_sparse_filter_defaults(self) -> None:
         with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key"}, clear=True):
             cfg = TrainRuntimeConfig.from_env()
