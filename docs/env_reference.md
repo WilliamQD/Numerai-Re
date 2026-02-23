@@ -43,6 +43,8 @@ Canonical runtime parsers:
 | `BENCH_DROP_SPARSE_COLUMNS` | `true` | Drop benchmark columns above null-ratio threshold before BMC alignment. |
 | `BENCH_MAX_NULL_RATIO_PER_COLUMN` | `0.0` | Maximum allowed null ratio per benchmark column (`0.0-1.0`). |
 | `BENCH_MIN_COLUMNS` | `1` | Minimum benchmark columns required after sparse-column filtering. |
+| `BENCH_MIN_COVERED_ROWS_PER_WINDOW` | `512` | Minimum benchmark-covered validation rows required per blend-tuning window. |
+| `BENCH_MIN_COVERED_ERAS_PER_WINDOW` | `8` | Minimum benchmark-covered eras required per blend-tuning window. |
 | `LGBM_NUM_LEAVES` | `128` | LightGBM tree leaves. |
 | `LGBM_MIN_DATA_IN_LEAF` | `1000` | LightGBM regularization parameter. |
 | `LGBM_FEATURE_FRACTION` | `0.7` | Column subsampling ratio. |

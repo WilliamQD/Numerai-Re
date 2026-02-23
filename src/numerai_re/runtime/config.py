@@ -56,6 +56,8 @@ class TrainRuntimeConfig:
     bench_drop_sparse_columns: bool = True
     bench_max_null_ratio_per_column: float = 0.0
     bench_min_columns: int = 1
+    bench_min_covered_rows_per_window: int = 512
+    bench_min_covered_eras_per_window: int = 8
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -139,6 +141,14 @@ class TrainRuntimeConfig:
         if bench_min_columns <= 0:
             raise ValueError("Invalid BENCH_MIN_COLUMNS. Expected positive integer.")
 
+        bench_min_covered_rows_per_window = int(os.getenv("BENCH_MIN_COVERED_ROWS_PER_WINDOW", "512"))
+        if bench_min_covered_rows_per_window <= 0:
+            raise ValueError("Invalid BENCH_MIN_COVERED_ROWS_PER_WINDOW. Expected positive integer.")
+
+        bench_min_covered_eras_per_window = int(os.getenv("BENCH_MIN_COVERED_ERAS_PER_WINDOW", "8"))
+        if bench_min_covered_eras_per_window <= 0:
+            raise ValueError("Invalid BENCH_MIN_COVERED_ERAS_PER_WINDOW. Expected positive integer.")
+
         return cls(
             dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "all"),
@@ -191,6 +201,8 @@ class TrainRuntimeConfig:
             bench_drop_sparse_columns=_optional_bool_env("BENCH_DROP_SPARSE_COLUMNS", default=True),
             bench_max_null_ratio_per_column=bench_max_null_ratio_per_column,
             bench_min_columns=bench_min_columns,
+            bench_min_covered_rows_per_window=bench_min_covered_rows_per_window,
+            bench_min_covered_eras_per_window=bench_min_covered_eras_per_window,
         )
 
 

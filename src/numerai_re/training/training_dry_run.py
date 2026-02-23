@@ -51,12 +51,15 @@ def _build_synthetic_dry_run_data(cfg: TrainRuntimeConfig, scratch_dir: Path) ->
     era_train = eras[:n_train]
     id_train = ids[:n_train]
     bench_train = bench_all[:n_train]
+    bench_train_mask = np.ones(n_train, dtype=bool)
 
     x_valid = x_all[n_train:]
     y_valid = y_all[n_train:]
     era_valid = eras[n_train:]
     id_valid = ids[n_train:]
     bench_valid = bench_all[n_train:]
+    bench_valid_mask = np.ones(n_valid, dtype=bool)
+    bench_all_mask = np.ones(total_rows, dtype=bool)
 
     era_all_int = era_to_int(eras)
     return LoadedData(
@@ -66,17 +69,20 @@ def _build_synthetic_dry_run_data(cfg: TrainRuntimeConfig, scratch_dir: Path) ->
         era_train=era_train,
         id_train=id_train,
         bench_train=bench_train,
+        bench_train_mask=bench_train_mask,
         x_valid=x_valid,
         y_valid=y_valid,
         era_valid=era_valid,
         id_valid=id_valid,
         bench_valid=bench_valid,
+        bench_valid_mask=bench_valid_mask,
         x_all=x_all,
         y_all=y_all,
         era_all=eras,
         era_all_int=era_all_int,
         id_all=ids,
         bench_all=bench_all,
+        bench_all_mask=bench_all_mask,
         bench_cols=bench_cols,
     )
 

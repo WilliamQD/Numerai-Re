@@ -27,9 +27,10 @@ class BenchMatrixBuilderTests(unittest.TestCase):
     def test_align_casts_id_types_before_join(self) -> None:
         ids = np.array([1, 2], dtype=np.int64)
         bench = pl.DataFrame({"id": ["1", "2"], "benchmark_1": [0.1, 0.2]})
-        matrix, cols = align_bench_to_ids(ids, bench, "id")
-        self.assertEqual(cols, ["benchmark_1"])
-        self.assertEqual(matrix.shape, (2, 1))
+        result = align_bench_to_ids(ids, bench, "id")
+        self.assertEqual(result.cols, ["benchmark_1"])
+        self.assertEqual(result.matrix.shape, (2, 1))
+        self.assertTrue(bool(result.coverage_mask.all()))
 
     @unittest.skipIf(not HAS_REAL_POLARS, "real polars is not installed")
     def test_align_reports_missing_ids(self) -> None:
@@ -59,9 +60,9 @@ class BenchMatrixBuilderTests(unittest.TestCase):
                 "benchmark_sparse": [0.4, None, 0.6],
             }
         )
-        matrix, cols = align_bench_to_ids(ids, bench, "id")
-        self.assertEqual(cols, ["benchmark_dense"])
-        self.assertEqual(matrix.shape, (3, 1))
+        result = align_bench_to_ids(ids, bench, "id")
+        self.assertEqual(result.cols, ["benchmark_dense"])
+        self.assertEqual(result.matrix.shape, (3, 1))
 
     @unittest.skipIf(not HAS_REAL_POLARS, "real polars is not installed")
     def test_align_raises_when_sparse_columns_not_dropped(self) -> None:
@@ -84,6 +85,15 @@ class BenchMatrixBuilderTests(unittest.TestCase):
         with self.assertRaises(BenchmarkAlignmentError) as ctx:
             align_bench_to_ids(ids, bench, "id", min_benchmark_columns=1)
         self.assertIn("removed too many columns", str(ctx.exception))
+
+    @unittest.skipIf(not HAS_REAL_POLARS, "real polars is not installed")
+    def test_align_allows_partial_coverage_with_mask(self) -> None:
+        ids = np.array(["a", "b", "c"], dtype=object)
+        bench = pl.DataFrame({"id": ["a", "c"], "benchmark_1": [0.1, 0.3]})
+        result = align_bench_to_ids(ids, bench, "id", allow_partial_coverage=True)
+        self.assertEqual(result.matrix.shape, (3, 1))
+        self.assertEqual(result.cols, ["benchmark_1"])
+        self.assertEqual(result.coverage_mask.tolist(), [True, False, True])
 
 
 if __name__ == "__main__":

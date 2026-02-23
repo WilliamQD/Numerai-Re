@@ -24,9 +24,9 @@ class ContributionUtilsTests(unittest.TestCase):
                 "bench_2": [1.3, 1.1, 1.2],
             }
         )
-        bench, cols = align_bench_to_ids(ids, bench_df, "id")
-        self.assertEqual(cols, ["bench_1", "bench_2"])
-        np.testing.assert_allclose(bench[:, 0], np.array([0.1, 0.2, 0.3], dtype=np.float32))
+        result = align_bench_to_ids(ids, bench_df, "id")
+        self.assertEqual(result.cols, ["bench_1", "bench_2"])
+        np.testing.assert_allclose(result.matrix[:, 0], np.array([0.1, 0.2, 0.3], dtype=np.float32))
 
     def test_align_bench_to_ids_raises_on_missing_ids(self) -> None:
         with self.assertRaises(RuntimeError):

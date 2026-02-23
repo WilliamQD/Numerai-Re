@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import polars as pl
 
 
 class BenchmarkAlignmentError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class BenchmarkAlignmentResult:
+    matrix: np.ndarray
+    cols: list[str]
+    coverage_mask: np.ndarray
 
 
 def bench_columns(df: pl.DataFrame, id_col: str) -> list[str]:
@@ -17,10 +26,11 @@ def align_bench_to_ids(
     bench_df: pl.DataFrame,
     id_col: str,
     *,
+    allow_partial_coverage: bool = False,
     drop_sparse_columns: bool = True,
     max_null_ratio_per_column: float = 0.0,
     min_benchmark_columns: int = 1,
-) -> tuple[np.ndarray, list[str]]:
+) -> BenchmarkAlignmentResult:
     if bench_df.height == 0:
         raise BenchmarkAlignmentError("Benchmark dataframe is empty.")
     if id_col not in bench_df.columns:
@@ -59,7 +69,7 @@ def align_bench_to_ids(
     joined = main.join(bench_df, on=id_col, how="left")
     join_missing_mask = pl.col("__bench_row_present").is_null()
     has_join_misses = joined.select(join_missing_mask.any()).item()
-    if bool(has_join_misses):
+    if bool(has_join_misses) and not allow_partial_coverage:
         missing_df = joined.filter(join_missing_mask).select(id_col)
         missing_count = missing_df.height
         sample_missing_ids = missing_df.head(10).get_column(id_col).to_list()
@@ -70,14 +80,21 @@ def align_bench_to_ids(
             "reason=benchmark ids do not fully cover requested ids."
         )
 
+    coverage_mask = (~joined.get_column("__bench_row_present").is_null()).to_numpy()
+    covered_rows = int(np.count_nonzero(coverage_mask))
+    if covered_rows == 0:
+        raise BenchmarkAlignmentError("Benchmark alignment has zero covered rows after id join.")
+
+    joined_covered = joined.filter(~join_missing_mask)
     joined = joined.drop("__bench_row_present")
+    joined_covered = joined_covered.drop("__bench_row_present")
     cols = bench_columns(joined, id_col)
     if not cols:
         raise BenchmarkAlignmentError("No benchmark columns found after join.")
 
     null_ratio_by_col: dict[str, float] = {}
     for col in cols:
-        null_ratio_by_col[col] = float(joined.select(pl.col(col).is_null().mean()).item())
+        null_ratio_by_col[col] = float(joined_covered.select(pl.col(col).is_null().mean()).item())
 
     dropped_cols: list[str] = []
     if drop_sparse_columns:
@@ -92,9 +109,9 @@ def align_bench_to_ids(
         )
 
     remaining_null_mask = pl.any_horizontal(*[pl.col(col).is_null() for col in cols])
-    has_remaining_nulls = joined.select(remaining_null_mask.any()).item()
+    has_remaining_nulls = joined_covered.select(remaining_null_mask.any()).item()
     if bool(has_remaining_nulls):
-        sparse_df = joined.filter(remaining_null_mask).select(id_col)
+        sparse_df = joined_covered.filter(remaining_null_mask).select(id_col)
         sparse_count = sparse_df.height
         sample_sparse_ids = sparse_df.head(10).get_column(id_col).to_list()
         raise BenchmarkAlignmentError(
@@ -104,5 +121,7 @@ def align_bench_to_ids(
             f"max_null_ratio_per_column={max_null_ratio_per_column}."
         )
 
-    matrix = joined.select(cols).to_numpy()
-    return matrix.astype(np.float32, copy=False), cols
+    covered_matrix = joined_covered.select(cols).to_numpy().astype(np.float32, copy=False)
+    matrix = np.zeros((len(main_ids), len(cols)), dtype=np.float32)
+    matrix[coverage_mask] = covered_matrix
+    return BenchmarkAlignmentResult(matrix=matrix, cols=cols, coverage_mask=coverage_mask)

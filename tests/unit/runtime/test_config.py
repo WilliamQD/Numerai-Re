@@ -45,6 +45,8 @@ class TrainRuntimeConfigTests(unittest.TestCase):
         self.assertTrue(cfg.bench_drop_sparse_columns)
         self.assertEqual(cfg.bench_max_null_ratio_per_column, 0.0)
         self.assertEqual(cfg.bench_min_columns, 1)
+        self.assertEqual(cfg.bench_min_covered_rows_per_window, 512)
+        self.assertEqual(cfg.bench_min_covered_eras_per_window, 8)
 
     def test_benchmark_sparse_filter_env_overrides(self) -> None:
         with patch.dict(
@@ -54,6 +56,8 @@ class TrainRuntimeConfigTests(unittest.TestCase):
                 "BENCH_DROP_SPARSE_COLUMNS": "false",
                 "BENCH_MAX_NULL_RATIO_PER_COLUMN": "0.2",
                 "BENCH_MIN_COLUMNS": "3",
+                "BENCH_MIN_COVERED_ROWS_PER_WINDOW": "1024",
+                "BENCH_MIN_COVERED_ERAS_PER_WINDOW": "12",
             },
             clear=True,
         ):
@@ -61,6 +65,8 @@ class TrainRuntimeConfigTests(unittest.TestCase):
         self.assertFalse(cfg.bench_drop_sparse_columns)
         self.assertEqual(cfg.bench_max_null_ratio_per_column, 0.2)
         self.assertEqual(cfg.bench_min_columns, 3)
+        self.assertEqual(cfg.bench_min_covered_rows_per_window, 1024)
+        self.assertEqual(cfg.bench_min_covered_eras_per_window, 12)
 
 
 class InferenceRuntimeConfigTests(unittest.TestCase):

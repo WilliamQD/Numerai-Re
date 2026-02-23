@@ -32,17 +32,20 @@ class LoadedData:
 	era_train: np.ndarray
 	id_train: np.ndarray
 	bench_train: np.ndarray
+	bench_train_mask: np.ndarray
 	x_valid: Any
 	y_valid: np.ndarray
 	era_valid: np.ndarray
 	id_valid: np.ndarray
 	bench_valid: np.ndarray
+	bench_valid_mask: np.ndarray
 	x_all: Any
 	y_all: np.ndarray
 	era_all: np.ndarray
 	era_all_int: np.ndarray
 	id_all: np.ndarray
 	bench_all: np.ndarray
+	bench_all_mask: np.ndarray
 	bench_cols: list[str]
 
 
@@ -324,17 +327,20 @@ def load_train_valid_frames(
 		era_train=era_train,
 		id_train=id_train,
 		bench_train=aligned_bench.train,
+		bench_train_mask=aligned_bench.train_mask,
 		x_valid=x_valid,
 		y_valid=y_valid,
 		era_valid=era_valid,
 		id_valid=id_valid,
 		bench_valid=aligned_bench.valid,
+		bench_valid_mask=aligned_bench.valid_mask,
 		x_all=x_all,
 		y_all=y_all,
 		era_all=era_all,
 		era_all_int=era_all_int,
 		id_all=id_all,
 		bench_all=aligned_bench.all,
+		bench_all_mask=aligned_bench.all_mask,
 		bench_cols=aligned_bench.cols,
 	)
 

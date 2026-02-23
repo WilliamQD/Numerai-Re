@@ -236,12 +236,33 @@ def collect_blend_windows(
         if train_idx.size == 0 or valid_idx.size == 0:
             continue
 
+        bench_mask = data.bench_all_mask[valid_idx]
+        covered_valid_idx = valid_idx[bench_mask]
+        covered_rows = int(covered_valid_idx.size)
+        if covered_rows < int(cfg.bench_min_covered_rows_per_window):
+            logger.warning(
+                "phase=blend_window_skipped window_id=%d reason=low_benchmark_row_coverage covered_rows=%d required_rows=%d",
+                int(row["window_id"]),
+                covered_rows,
+                int(cfg.bench_min_covered_rows_per_window),
+            )
+            continue
+        covered_eras = int(np.unique(data.era_all[covered_valid_idx]).size)
+        if covered_eras < int(cfg.bench_min_covered_eras_per_window):
+            logger.warning(
+                "phase=blend_window_skipped window_id=%d reason=low_benchmark_era_coverage covered_eras=%d required_eras=%d",
+                int(row["window_id"]),
+                covered_eras,
+                int(cfg.bench_min_covered_eras_per_window),
+            )
+            continue
+
         x_train = data.x_all[train_idx]
         y_train = data.y_all[train_idx]
-        x_valid = data.x_all[valid_idx]
-        y_valid = data.y_all[valid_idx]
-        era_valid = data.era_all[valid_idx]
-        bench_valid = data.bench_all[valid_idx]
+        x_valid = data.x_all[covered_valid_idx]
+        y_valid = data.y_all[covered_valid_idx]
+        era_valid = data.era_all[covered_valid_idx]
+        bench_valid = data.bench_all[covered_valid_idx]
 
         fit_params = dict(lgb_params)
         fit_params["seed"] = tune_seed
