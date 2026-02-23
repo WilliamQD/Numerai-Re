@@ -39,6 +39,36 @@ class TrainRuntimeConfigTests(unittest.TestCase):
             cfg = TrainRuntimeConfig.from_env()
         self.assertFalse(cfg.use_int8_parquet)
 
+    def test_status_update_seconds_defaults_to_60(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key"}, clear=True):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertEqual(cfg.status_update_seconds, 60)
+
+    def test_status_update_seconds_must_be_positive(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key", "STATUS_UPDATE_SECONDS": "0"}, clear=True):
+            with self.assertRaises(ValueError):
+                TrainRuntimeConfig.from_env()
+
+    def test_walkforward_num_boost_round_defaults_to_lgbm_num_boost_round(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key", "LGBM_NUM_BOOST_ROUND": "1234"}, clear=True):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertEqual(cfg.num_boost_round, 1234)
+        self.assertEqual(cfg.walkforward_num_boost_round, 1234)
+
+    def test_walkforward_num_boost_round_can_be_overridden(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WANDB_API_KEY": "dummy-key",
+                "LGBM_NUM_BOOST_ROUND": "1500",
+                "WALKFORWARD_NUM_BOOST_ROUND": "600",
+            },
+            clear=True,
+        ):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertEqual(cfg.num_boost_round, 1500)
+        self.assertEqual(cfg.walkforward_num_boost_round, 600)
+
     def test_benchmark_sparse_filter_defaults(self) -> None:
         with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key"}, clear=True):
             cfg = TrainRuntimeConfig.from_env()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,7 @@ import lightgbm as lgb
 import numpy as np
 import wandb
 
+from numerai_re.common.status_reporter import RuntimeStatusReporter
 from numerai_re.metrics.numerai_metrics import mean_per_era_numerai_corr
 from numerai_re.training.walkforward import build_windows
 
@@ -60,6 +62,7 @@ def evaluate_walkforward(
     data: Any,
     *,
     logger: logging.Logger,
+    status: RuntimeStatusReporter | None = None,
 ) -> WalkforwardReport:
     windows = build_windows(
         era_numbers=data.era_all_int,
@@ -70,13 +73,25 @@ def evaluate_walkforward(
         windows = windows[-cfg.walkforward_max_windows :]
     if not windows:
         raise RuntimeError("No valid walk-forward windows found for current data and configuration.")
+    wf_num_boost_round = int(getattr(cfg, "walkforward_num_boost_round", cfg.num_boost_round))
+    logger.info("phase=walkforward_started n_windows=%d num_boost_round=%d", len(windows), wf_num_boost_round)
+    stage_start = time.monotonic()
 
     tune_seed = int(cfg.walkforward_tune_seed if cfg.walkforward_tune_seed is not None else cfg.lgbm_seeds[0])
     rows: list[dict[str, float | int]] = []
     best_iters: list[int] = []
     window_corrs: list[float] = []
+    total_windows = len(windows)
 
     for window in windows:
+        if status is not None:
+            status.update(
+                "walkforward_window",
+                window=f"{int(window.window_id)}/{total_windows}",
+                completed=len(rows),
+                total=total_windows,
+                force=True,
+            )
         train_idx = np.flatnonzero(data.era_all_int <= window.train_end)
         valid_idx = np.flatnonzero((data.era_all_int >= window.val_start) & (data.era_all_int <= window.val_end))
         if train_idx.size == 0 or valid_idx.size == 0:
@@ -95,16 +110,30 @@ def evaluate_walkforward(
         fit_params = dict(lgb_params)
         fit_params["seed"] = tune_seed
         evals_result: dict[str, dict[str, list[float]]] = {}
+
+        def _status_callback(env: Any) -> None:
+            if status is None:
+                return
+            status.update(
+                "walkforward_fit",
+                window=f"{int(window.window_id)}/{total_windows}",
+                iter=f"{int(env.iteration) + 1}/{int(env.end_iteration)}",
+            )
+
+        _status_callback.order = 0
+        _status_callback.before_iteration = False
+
         try:
             model = lgb.train(
                 params=fit_params,
                 train_set=dtrain,
-                num_boost_round=cfg.num_boost_round,
+                num_boost_round=wf_num_boost_round,
                 valid_sets=[dtrain, dvalid],
                 valid_names=["train", "valid"],
                 callbacks=[
                     lgb.early_stopping(cfg.early_stopping_rounds, verbose=False),
                     lgb.record_evaluation(evals_result),
+                    _status_callback,
                 ],
             )
         except lgb.basic.LightGBMError as exc:
@@ -117,12 +146,13 @@ def evaluate_walkforward(
             model = lgb.train(
                 params=fit_params,
                 train_set=dtrain,
-                num_boost_round=cfg.num_boost_round,
+                num_boost_round=wf_num_boost_round,
                 valid_sets=[dtrain, dvalid],
                 valid_names=["train", "valid"],
                 callbacks=[
                     lgb.early_stopping(cfg.early_stopping_rounds, verbose=False),
                     lgb.record_evaluation(evals_result),
+                    _status_callback,
                 ],
             )
         del dtrain, dvalid
@@ -154,6 +184,18 @@ def evaluate_walkforward(
         rows.append(row)
         best_iters.append(int(best_iter))
         window_corrs.append(corr_mean_per_era)
+        elapsed_s = max(0.0, time.monotonic() - stage_start)
+        eta_s = (elapsed_s / len(rows)) * max(total_windows - len(rows), 0)
+        logger.info(
+            "phase=walkforward_window_completed window_id=%d completed=%d total=%d best_iter=%d corr_mean_per_era=%.6f elapsed_s=%.1f eta_s=%.1f",
+            int(window.window_id),
+            len(rows),
+            total_windows,
+            int(best_iter),
+            corr_mean_per_era,
+            elapsed_s,
+            eta_s,
+        )
 
     if not rows:
         raise RuntimeError("No walk-forward windows produced usable train/validation splits.")
@@ -217,6 +259,7 @@ def collect_blend_windows(
     wf_report: WalkforwardReport,
     *,
     logger: logging.Logger,
+    status: RuntimeStatusReporter | None = None,
 ) -> list[dict[str, np.ndarray | int]]:
     if cfg.blend_tune_seed is None:
         raise RuntimeError(
@@ -226,9 +269,21 @@ def collect_blend_windows(
     selected_windows = wf_report.windows
     if cfg.blend_use_windows:
         selected_windows = selected_windows[-int(cfg.blend_use_windows) :]
+    logger.info("phase=blend_windows_collection_started n_windows=%d", len(selected_windows))
+    wf_num_boost_round = int(getattr(cfg, "walkforward_num_boost_round", cfg.num_boost_round))
+    stage_start = time.monotonic()
 
     rows: list[dict[str, np.ndarray | int]] = []
-    for row in selected_windows:
+    total_windows = len(selected_windows)
+    for idx, row in enumerate(selected_windows, start=1):
+        if status is not None:
+            status.update(
+                "blend_window",
+                window=f"{idx}/{total_windows}",
+                selected_window_id=int(row["window_id"]),
+                completed=len(rows),
+                force=True,
+            )
         train_idx = np.flatnonzero(data.era_all_int <= int(row["train_end"]))
         valid_idx = np.flatnonzero(
             (data.era_all_int >= int(row["val_start"])) & (data.era_all_int <= int(row["val_end"]))
@@ -269,14 +324,31 @@ def collect_blend_windows(
         dtrain = lgb.Dataset(x_train, label=y_train, feature_name=data.feature_cols, free_raw_data=True)
         dvalid = lgb.Dataset(x_valid, label=y_valid, reference=dtrain, feature_name=data.feature_cols, free_raw_data=True)
         del x_train
+
+        def _status_callback(env: Any) -> None:
+            if status is None:
+                return
+            status.update(
+                "blend_window_fit",
+                window=f"{idx}/{total_windows}",
+                selected_window_id=int(row["window_id"]),
+                iter=f"{int(env.iteration) + 1}/{int(env.end_iteration)}",
+            )
+
+        _status_callback.order = 0
+        _status_callback.before_iteration = False
+
         try:
             model = lgb.train(
                 params=fit_params,
                 train_set=dtrain,
-                num_boost_round=cfg.num_boost_round,
+                num_boost_round=wf_num_boost_round,
                 valid_sets=[dtrain, dvalid],
                 valid_names=["train", "valid"],
-                callbacks=[lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)],
+                callbacks=[
+                    lgb.early_stopping(cfg.early_stopping_rounds, verbose=False),
+                    _status_callback,
+                ],
             )
         except lgb.basic.LightGBMError as exc:
             if fit_params.get("device") != "gpu" or "No OpenCL device found" not in str(exc):
@@ -286,10 +358,13 @@ def collect_blend_windows(
             model = lgb.train(
                 params=fit_params,
                 train_set=dtrain,
-                num_boost_round=cfg.num_boost_round,
+                num_boost_round=wf_num_boost_round,
                 valid_sets=[dtrain, dvalid],
                 valid_names=["train", "valid"],
-                callbacks=[lgb.early_stopping(cfg.early_stopping_rounds, verbose=False)],
+                callbacks=[
+                    lgb.early_stopping(cfg.early_stopping_rounds, verbose=False),
+                    _status_callback,
+                ],
             )
         del dtrain, dvalid
         gc.collect()
@@ -312,6 +387,17 @@ def collect_blend_windows(
                 "era": era_valid,
                 "bench": bench_valid,
             }
+        )
+        elapsed_s = max(0.0, time.monotonic() - stage_start)
+        eta_s = (elapsed_s / len(rows)) * max(total_windows - len(rows), 0)
+        logger.info(
+            "phase=blend_window_completed selected_window_id=%d completed=%d total=%d covered_rows=%d elapsed_s=%.1f eta_s=%.1f",
+            int(row["window_id"]),
+            len(rows),
+            total_windows,
+            covered_rows,
+            elapsed_s,
+            eta_s,
         )
     if not rows:
         raise RuntimeError("No windows available for blend tuning.")

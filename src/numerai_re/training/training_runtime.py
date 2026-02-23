@@ -12,12 +12,13 @@ import wandb
 from numerapi import NumerAPI
 
 from numerai_re.contracts.artifact_contract import FEATURES_FILENAME
+from numerai_re.common.status_reporter import RuntimeStatusReporter
 from numerai_re.data.benchmarks import download_benchmark_parquets
 from numerai_re.runtime.config import TrainRuntimeConfig
 from numerai_re.data.data_loading import load_split_numpy
 from numerai_re.common.era_utils import era_to_int
 from numerai_re.features.feature_sampling import sample_features_for_seed
-from numerai_re.data.numerapi_datasets import resolve_split_parquet
+from numerai_re.data.numerapi_datasets import SplitParquetResolution, resolve_split_parquet_with_report
 from numerai_re.data.train_benchmark_data import load_and_align_benchmarks
 
 
@@ -62,6 +63,63 @@ class FitResult:
 	corr_scan_iters: list[int]
 
 
+@dataclass(frozen=True)
+class DatasetSelection:
+	train_dataset: str
+	validation_dataset: str
+	train_is_int8: bool
+	validation_is_int8: bool
+	feature_dtype: type
+
+
+def _log_split_resolution(split: str, resolution: SplitParquetResolution) -> None:
+	candidate_preview = "|".join(resolution.candidates[:5]) if resolution.candidates else "<none>"
+	logger.info(
+		"phase=dataset_resolution split=%s requested_int8=%s selected=%s selected_is_int8=%s total_candidates=%d int8_candidates=%d candidates_preview=%s",
+		split,
+		resolution.use_int8_requested,
+		resolution.selected,
+		resolution.selected_is_int8,
+		len(resolution.candidates),
+		len(resolution.int8_candidates),
+		candidate_preview,
+	)
+	if resolution.use_int8_requested and not resolution.int8_candidates:
+		logger.warning(
+			"phase=int8_dataset_fallback split=%s dataset_version=%s reason=int8_not_found selected=%s candidate_count=%d candidates_preview=%s",
+			split,
+			resolution.dataset_version,
+			resolution.selected,
+			len(resolution.candidates),
+			candidate_preview,
+		)
+
+
+def _lgb_status_callback(
+	status: RuntimeStatusReporter | None,
+	phase: str,
+	*,
+	seed: int | None = None,
+	window_id: int | None = None,
+	window_total: int | None = None,
+) -> Any:
+	def _callback(env: Any) -> None:
+		if status is None:
+			return
+		payload: dict[str, object] = {
+			"iter": f"{int(env.iteration) + 1}/{int(env.end_iteration)}",
+		}
+		if seed is not None:
+			payload["seed"] = seed
+		if window_id is not None and window_total is not None:
+			payload["window"] = f"{window_id}/{window_total}"
+		status.update(phase, **payload)
+
+	_callback.order = 0
+	_callback.before_iteration = False
+	return _callback
+
+
 BASE_LGB_PARAMS = {
 	"objective": "regression",
 	"metric": "rmse",
@@ -102,7 +160,7 @@ def download_with_numerapi(
 	data_dir: Path,
 	*,
 	force_benchmark_redownload: bool = False,
-) -> tuple[Path, Path, Path, dict[str, Path]]:
+) -> tuple[Path, Path, Path, dict[str, Path], DatasetSelection]:
 	version_data_dir = data_dir / cfg.dataset_version
 	version_data_dir.mkdir(parents=True, exist_ok=True)
 	numerapi_kwargs: dict[str, str] = {}
@@ -118,27 +176,35 @@ def download_with_numerapi(
 	features_path = version_data_dir / FEATURES_FILENAME
 
 	datasets = napi.list_datasets()
-	train_dataset = resolve_split_parquet(
+	train_resolution = resolve_split_parquet_with_report(
 		datasets,
 		cfg.dataset_version,
 		("train",),
 		use_int8=cfg.use_int8_parquet,
 	)
-	validation_dataset = resolve_split_parquet(
+	validation_resolution = resolve_split_parquet_with_report(
 		datasets,
 		cfg.dataset_version,
 		("validation",),
 		use_int8=cfg.use_int8_parquet,
 	)
-	if cfg.use_int8_parquet and "int8" not in train_dataset.lower():
+	_log_split_resolution("train", train_resolution)
+	_log_split_resolution("validation", validation_resolution)
+
+	train_dataset = train_resolution.selected
+	validation_dataset = validation_resolution.selected
+	use_int8_effective = train_resolution.selected_is_int8 and validation_resolution.selected_is_int8
+	if cfg.use_int8_parquet and not use_int8_effective:
 		logger.warning(
-			"phase=int8_dataset_fallback split=train dataset_version=%s reason=int8_not_found",
-			cfg.dataset_version,
+			"phase=int8_dtype_disabled reason=resolved_paths_not_both_int8 train_selected=%s validation_selected=%s",
+			train_dataset,
+			validation_dataset,
 		)
-	if cfg.use_int8_parquet and "int8" not in validation_dataset.lower():
-		logger.warning(
-			"phase=int8_dataset_fallback split=validation dataset_version=%s reason=int8_not_found",
-			cfg.dataset_version,
+	elif cfg.use_int8_parquet:
+		logger.info(
+			"phase=int8_dtype_enabled reason=both_splits_int8 train_selected=%s validation_selected=%s",
+			train_dataset,
+			validation_dataset,
 		)
 
 	required_files = (
@@ -159,7 +225,14 @@ def download_with_numerapi(
 		version_data_dir / "benchmarks",
 		force_redownload=force_benchmark_redownload,
 	)
-	return train_path, validation_path, features_path, benchmark_paths
+	selection = DatasetSelection(
+		train_dataset=train_dataset,
+		validation_dataset=validation_dataset,
+		train_is_int8=train_resolution.selected_is_int8,
+		validation_is_int8=validation_resolution.selected_is_int8,
+		feature_dtype=np.int8 if use_int8_effective else np.float32,
+	)
+	return train_path, validation_path, features_path, benchmark_paths, selection
 
 
 def load_feature_list(features_path: Path, feature_set_name: str) -> list[str]:
@@ -271,6 +344,8 @@ def load_train_valid_frames(
 	validation_path: Path,
 	benchmark_paths: dict[str, Path],
 	feature_cols: list[str],
+	*,
+	feature_dtype_override: type | None = None,
 ) -> LoadedData:
 	logger.info(
 		"phase=feature_subset_loading dataset_version=%s data_dir=%s n_features=%d",
@@ -278,7 +353,10 @@ def load_train_valid_frames(
 		cfg.numerai_data_dir,
 		len(feature_cols),
 	)
-	feature_dtype = np.int8 if cfg.use_int8_parquet else np.float32
+	feature_dtype = feature_dtype_override if feature_dtype_override is not None else (
+		np.int8 if cfg.use_int8_parquet else np.float32
+	)
+	logger.info("phase=feature_dtype_selected dtype=%s", np.dtype(feature_dtype).name)
 	use_cache = cfg.load_mode == "cached"
 
 	x_train, y_train, era_train, id_train = load_split_numpy(
@@ -445,11 +523,16 @@ def fit_lgbm_final(
 	feature_cols: list[str],
 	seed: int,
 	num_boost_round: int,
+	*,
+	status: RuntimeStatusReporter | None = None,
 ) -> lgb.Booster:
 	dtrain = lgb.Dataset(x, label=y, feature_name=feature_cols, free_raw_data=True)
 	params = dict(lgb_params)
 	params["seed"] = seed
-	return lgb.train(params=params, train_set=dtrain, num_boost_round=num_boost_round)
+	callbacks: list[Any] = []
+	if status is not None:
+		callbacks.append(_lgb_status_callback(status, "seed_fit_final", seed=seed))
+	return lgb.train(params=params, train_set=dtrain, num_boost_round=num_boost_round, callbacks=callbacks)
 
 
 def sample_features_by_seed(cfg: TrainRuntimeConfig, feature_pool: list[str]) -> dict[int, list[str]]:

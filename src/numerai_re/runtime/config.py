@@ -17,6 +17,7 @@ class TrainRuntimeConfig:
     id_col: str = "id"
     model_name: str = "lgbm_numerai_v52"
     num_boost_round: int = 5000
+    walkforward_num_boost_round: int = 5000
     early_stopping_rounds: int = 300
     wandb_project: str = "numerai-mlops"
     wandb_entity: str | None = None
@@ -58,6 +59,7 @@ class TrainRuntimeConfig:
     bench_min_columns: int = 1
     bench_min_covered_rows_per_window: int = 512
     bench_min_covered_eras_per_window: int = 8
+    status_update_seconds: int = 60
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -149,6 +151,18 @@ class TrainRuntimeConfig:
         if bench_min_covered_eras_per_window <= 0:
             raise ValueError("Invalid BENCH_MIN_COVERED_ERAS_PER_WINDOW. Expected positive integer.")
 
+        status_update_seconds = int(os.getenv("STATUS_UPDATE_SECONDS", "60"))
+        if status_update_seconds <= 0:
+            raise ValueError("Invalid STATUS_UPDATE_SECONDS. Expected positive integer.")
+
+        num_boost_round = int(os.getenv("LGBM_NUM_BOOST_ROUND", "5000"))
+        if num_boost_round <= 0:
+            raise ValueError("Invalid LGBM_NUM_BOOST_ROUND. Expected positive integer.")
+
+        walkforward_num_boost_round = int(os.getenv("WALKFORWARD_NUM_BOOST_ROUND", str(num_boost_round)))
+        if walkforward_num_boost_round <= 0:
+            raise ValueError("Invalid WALKFORWARD_NUM_BOOST_ROUND. Expected positive integer.")
+
         return cls(
             dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "all"),
@@ -161,7 +175,8 @@ class TrainRuntimeConfig:
             numerai_secret_key=numerai_secret_key,
             numerai_data_dir=Path(os.getenv("NUMERAI_DATA_DIR", "/content/numerai_data")),
             lgbm_device=lgbm_device,
-            num_boost_round=int(os.getenv("LGBM_NUM_BOOST_ROUND", "5000")),
+            num_boost_round=num_boost_round,
+            walkforward_num_boost_round=walkforward_num_boost_round,
             early_stopping_rounds=int(os.getenv("LGBM_EARLY_STOPPING_ROUNDS", "300")),
             lgbm_learning_rate=float(os.getenv("LGBM_LEARNING_RATE", "0.02")),
             lgbm_num_leaves=int(os.getenv("LGBM_NUM_LEAVES", "128")),
@@ -203,6 +218,7 @@ class TrainRuntimeConfig:
             bench_min_columns=bench_min_columns,
             bench_min_covered_rows_per_window=bench_min_covered_rows_per_window,
             bench_min_covered_eras_per_window=bench_min_covered_eras_per_window,
+            status_update_seconds=status_update_seconds,
         )
 
 

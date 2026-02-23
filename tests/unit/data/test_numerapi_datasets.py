@@ -6,7 +6,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from numerai_re.data.numerapi_datasets import pick_benchmark_models_parquet, resolve_split_parquet
+from numerai_re.data.numerapi_datasets import (
+    pick_benchmark_models_parquet,
+    resolve_split_parquet,
+    resolve_split_parquet_with_report,
+)
 
 
 class NumerapiDatasetResolverTests(unittest.TestCase):
@@ -19,6 +23,14 @@ class NumerapiDatasetResolverTests(unittest.TestCase):
         datasets: list[str] = []
         selected = resolve_split_parquet(datasets, "v5.2", ("validation",), use_int8=False)
         self.assertEqual(selected, "v5.2/validation.parquet")
+
+    def test_resolve_split_report_exposes_int8_absence(self) -> None:
+        datasets = ["v5.2/train.parquet"]
+        report = resolve_split_parquet_with_report(datasets, "v5.2", ("train",), use_int8=True)
+        self.assertEqual(report.selected, "v5.2/train.parquet")
+        self.assertFalse(report.selected_is_int8)
+        self.assertEqual(report.int8_candidates, ())
+        self.assertEqual(report.non_int8_candidates, ("v5.2/train.parquet",))
 
     def test_pick_benchmark_models_prefers_exact_name(self) -> None:
         datasets = [

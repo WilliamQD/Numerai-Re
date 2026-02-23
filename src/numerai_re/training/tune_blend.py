@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import wandb
 
+from numerai_re.common.status_reporter import RuntimeStatusReporter
 from numerai_re.metrics.numerai_metrics import bmc_mean_per_era, mean_per_era_numerai_corr
 from numerai_re.inference.postprocess import PostprocessConfig, apply_postprocess
 
@@ -43,17 +44,30 @@ def tune_blend_on_windows(
     prop_grid: tuple[float, ...],
     payout_weight_corr: float,
     payout_weight_bmc: float,
+    *,
+    status: RuntimeStatusReporter | None = None,
 ) -> BlendTuneReport:
     search_rows: list[dict[str, float]] = []
     best_row: dict[str, float] | None = None
     best_metrics: tuple[float, float, float] | None = None
+    total_combos = len(alpha_grid) * len(prop_grid)
+    combo_index = 0
 
     for alpha in alpha_grid:
         for prop in prop_grid:
+            combo_index += 1
             scores: list[float] = []
             corrs: list[float] = []
             bmcs: list[float] = []
-            for window in windows:
+            for window_index, window in enumerate(windows, start=1):
+                if status is not None:
+                    status.update(
+                        "blend_tune",
+                        combo=f"{combo_index}/{total_combos}",
+                        window=f"{window_index}/{len(windows)}",
+                        alpha=f"{float(alpha):.2f}",
+                        prop=f"{float(prop):.2f}",
+                    )
                 pred_raw = window["pred_raw"]  # type: ignore[index]
                 target = window["target"]  # type: ignore[index]
                 era = window["era"]  # type: ignore[index]

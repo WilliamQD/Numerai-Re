@@ -8,6 +8,8 @@ from typing import Any, Callable
 import numpy as np
 import wandb
 
+from numerai_re.common.status_reporter import RuntimeStatusReporter
+
 
 def hydrate_checkpoint_features(
     members: list[dict[str, object]],
@@ -45,6 +47,7 @@ def run_seed_training_loop(
     checkpoint_postprocess: dict[str, object],
     recommended_iter: int | None,
     wf_report_mean_corr: float | None,
+    feature_dtype: type,
     load_train_valid_frames_fn: Callable[..., Any],
     fit_lgbm_fn: Callable[..., Any],
     fit_lgbm_final_fn: Callable[..., Any],
@@ -53,10 +56,19 @@ def run_seed_training_loop(
     write_features_mapping_fn: Callable[[Path, dict[str, list[str]]], None],
     write_training_checkpoint_fn: Callable[..., None],
     logger: logging.Logger,
+    status: RuntimeStatusReporter | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, list[str]]]:
     completed_seeds = {int(member["seed"]) for member in members}
 
     for seed in cfg.lgbm_seeds:
+        if status is not None:
+            status.update(
+                "seed_loop",
+                seed=int(seed),
+                completed=len(completed_seeds),
+                total=len(cfg.lgbm_seeds),
+                force=True,
+            )
         if seed in completed_seeds:
             logger.info("phase=seed_skipped_already_completed seed=%d", seed)
             continue
@@ -68,6 +80,7 @@ def run_seed_training_loop(
             validation_path=validation_path,
             benchmark_paths=benchmark_paths,
             feature_cols=seed_features,
+            feature_dtype_override=feature_dtype,
         )
         if cfg.walkforward_enabled:
             if recommended_iter is None:
@@ -80,6 +93,7 @@ def run_seed_training_loop(
                 feature_cols=seed_features,
                 seed=seed,
                 num_boost_round=recommended_iter,
+                status=status,
             )
             final_model.save_model(str(checkpoint_dir / model_file), num_iteration=recommended_iter)
             member = {

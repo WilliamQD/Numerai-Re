@@ -4,6 +4,7 @@ import gc
 import logging
 from pathlib import Path
 
+from numerai_re.common.status_reporter import RuntimeStatusReporter
 from numerai_re.data.bench_matrix_builder import BenchmarkAlignmentError
 from numerai_re.runtime.config import TrainRuntimeConfig
 from numerai_re.features.feature_sampling import features_hash
@@ -58,7 +59,18 @@ def train() -> None:
 
     lgb_params = resolve_lgb_params(cfg)
     run = init_wandb_run(cfg, lgb_params)
-    train_path, validation_path, features_path, benchmark_paths = download_with_numerapi(cfg, cfg.numerai_data_dir)
+    status = RuntimeStatusReporter(logger=logger, interval_seconds=float(cfg.status_update_seconds), name="train")
+    train_path, validation_path, features_path, benchmark_paths, dataset_selection = download_with_numerapi(
+        cfg,
+        cfg.numerai_data_dir,
+    )
+    logger.info(
+        "phase=dataset_selection_summary requested_int8=%s train_selected=%s validation_selected=%s feature_dtype=%s",
+        cfg.use_int8_parquet,
+        dataset_selection.train_dataset,
+        dataset_selection.validation_dataset,
+        dataset_selection.feature_dtype.__name__,
+    )
     feature_pool = load_feature_list(features_path, cfg.feature_set_name)
     logger.info(
         "phase=datasets_downloaded dataset_version=%s data_dir=%s n_features=%d",
@@ -75,13 +87,14 @@ def train() -> None:
             validation_path=validation_path,
             benchmark_paths=benchmark_paths,
             feature_cols=sampled_features_by_seed[base_seed],
+            feature_dtype_override=dataset_selection.feature_dtype,
         )
     except BenchmarkAlignmentError as first_exc:
         logger.warning(
             "phase=bench_alignment_retry reason=%s action=force_redownload",
             first_exc,
         )
-        _, _, _, benchmark_paths = download_with_numerapi(
+        _, _, _, benchmark_paths, _ = download_with_numerapi(
             cfg,
             cfg.numerai_data_dir,
             force_benchmark_redownload=True,
@@ -93,6 +106,7 @@ def train() -> None:
                 validation_path=validation_path,
                 benchmark_paths=benchmark_paths,
                 feature_cols=sampled_features_by_seed[base_seed],
+                feature_dtype_override=dataset_selection.feature_dtype,
             )
         except BenchmarkAlignmentError as second_exc:
             raise RuntimeError(
@@ -116,15 +130,16 @@ def train() -> None:
     }
     recommended_iter: int | None = None
     if cfg.walkforward_enabled:
-        wf_report = evaluate_walkforward(cfg, lgb_params, base_data, logger=logger)
+        wf_report = evaluate_walkforward(cfg, lgb_params, base_data, logger=logger, status=status)
         recommended_iter = int(wf_report.recommended_num_iteration)
-        blend_windows = collect_blend_windows(cfg, lgb_params, base_data, wf_report, logger=logger)
+        blend_windows = collect_blend_windows(cfg, lgb_params, base_data, wf_report, logger=logger, status=status)
         blend_report = tune_blend_on_windows(
             windows=blend_windows,
             alpha_grid=cfg.blend_alpha_grid,
             prop_grid=cfg.bench_neutralize_prop_grid,
             payout_weight_corr=float(cfg.payout_weight_corr),
             payout_weight_bmc=float(cfg.payout_weight_bmc),
+            status=status,
         )
         checkpoint_walkforward = {
             "enabled": True,
@@ -203,6 +218,7 @@ def train() -> None:
         checkpoint_postprocess=checkpoint_postprocess,
         recommended_iter=recommended_iter,
         wf_report_mean_corr=float(wf_report.mean_corr) if wf_report is not None else None,
+        feature_dtype=dataset_selection.feature_dtype,
         load_train_valid_frames_fn=load_train_valid_frames,
         fit_lgbm_fn=fit_lgbm,
         fit_lgbm_final_fn=fit_lgbm_final,
@@ -211,6 +227,7 @@ def train() -> None:
         write_features_mapping_fn=write_features_mapping,
         write_training_checkpoint_fn=_write_training_checkpoint,
         logger=logger,
+        status=status,
     )
 
     if len(members) != len(cfg.lgbm_seeds):
@@ -233,4 +250,5 @@ def train() -> None:
         wf_report=wf_report,
         postprocess_config=checkpoint_postprocess,
     )
+    status.clear()
     run.finish()

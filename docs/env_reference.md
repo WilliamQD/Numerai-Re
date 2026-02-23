@@ -20,6 +20,7 @@ Canonical runtime parsers:
 | --- | --- | --- |
 | `WANDB_MODEL_NAME` | `lgbm_numerai_v52` | W&B model registry name used by train/inference. |
 | `USE_INT8_PARQUET` | `true` | Prefer int8 Numerai parquet variants when available. |
+| `STATUS_UPDATE_SECONDS` | `60` | Long-phase status refresh cadence (single-line if interactive, compact log fallback otherwise). |
 | `TRAIN_DRY_RUN` | `false` | Run synthetic training smoke path and print `TRAIN_DRY_RUN_OK`. |
 | `INFER_DRY_RUN` | `false` | Run inference smoke path and print `INFER_DRY_RUN_OK`. |
 
@@ -52,6 +53,7 @@ Canonical runtime parsers:
 | `LGBM_BAGGING_FREQ` | `1` | Bagging frequency. |
 | `LGBM_LEARNING_RATE` | `0.02` | Learning rate. |
 | `LGBM_NUM_BOOST_ROUND` | `5000` | Maximum boosting rounds. |
+| `WALKFORWARD_NUM_BOOST_ROUND` | `LGBM_NUM_BOOST_ROUND` | Boosting-round cap used only for walk-forward and blend-window tuning fits. |
 | `LGBM_EARLY_STOPPING_ROUNDS` | `300` | Early stopping patience. |
 | `CORR_SCAN_PERIOD` | `100` | Iteration interval for CORR scanning. |
 | `CORR_SCAN_MAX_ITERS` | unset | Optional scan upper bound. |
