@@ -41,7 +41,7 @@ class TrainRuntimeConfigTests(unittest.TestCase):
 
 
 class InferenceRuntimeConfigTests(unittest.TestCase):
-    def test_allow_features_by_model_missing_default_false(self) -> None:
+    def test_inference_config_loads_required_fields(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -54,7 +54,11 @@ class InferenceRuntimeConfigTests(unittest.TestCase):
             clear=True,
         ):
             cfg = InferenceRuntimeConfig.from_env()
-        self.assertFalse(cfg.allow_features_by_model_missing)
+        self.assertEqual(cfg.numerai_public_id, "pid")
+        self.assertEqual(cfg.numerai_secret_key, "sid")
+        self.assertEqual(cfg.numerai_model_name, "model")
+        self.assertEqual(cfg.wandb_entity, "entity")
+        self.assertEqual(cfg.wandb_project, "project")
 
 
 if __name__ == "__main__":

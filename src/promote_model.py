@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
 
 import wandb
 
+from artifact_contract import (
+    FEATURES_FILENAME,
+    load_manifest,
+    resolve_model_files,
+    validate_model_files_exist,
+)
 
-FEATURES_FILENAME = "features.json"
-MANIFEST_FILENAME = "train_manifest.json"
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 logger = logging.getLogger(__name__)
 
@@ -37,15 +40,9 @@ def main() -> int:
     root = Path(artifact.download(root="artifacts_promote"))
 
     features_path = root / FEATURES_FILENAME
-    manifest_path = root / MANIFEST_FILENAME
     if not features_path.exists():
         raise RuntimeError(f"Candidate artifact is missing required file '{FEATURES_FILENAME}'.")
-    if not manifest_path.exists():
-        raise RuntimeError(f"Candidate artifact is missing required file '{MANIFEST_FILENAME}'.")
-
-    manifest = json.loads(manifest_path.read_text())
-    if not isinstance(manifest, dict):
-        raise RuntimeError(f"Invalid '{MANIFEST_FILENAME}': expected JSON object.")
+    manifest = load_manifest(root, label=ref)
 
     manifest_dataset_version = manifest.get("dataset_version")
     if expected_dataset_version and manifest_dataset_version != expected_dataset_version:
@@ -54,18 +51,8 @@ def main() -> int:
             f"expected {expected_dataset_version!r}."
         )
 
-    model_files = manifest.get("model_files")
-    if isinstance(model_files, list) and model_files and all(isinstance(name, str) and name.strip() for name in model_files):
-        filenames = model_files
-    else:
-        model_file = manifest.get("model_file")
-        if not isinstance(model_file, str) or not model_file.strip():
-            raise RuntimeError("Manifest missing valid 'model_files' or 'model_file'.")
-        filenames = [model_file]
-
-    missing_models = [name for name in filenames if not (root / name).exists()]
-    if missing_models:
-        raise RuntimeError(f"Candidate artifact is missing model files: {missing_models}")
+    filenames = resolve_model_files(manifest, label=ref)
+    validate_model_files_exist(root, filenames, label=ref)
 
     run = wandb.init(project=project, entity=entity, job_type="promote")
     run.log_artifact(artifact, aliases=[prod_alias])

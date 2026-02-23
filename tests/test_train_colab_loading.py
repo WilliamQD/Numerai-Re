@@ -34,7 +34,7 @@ def _ensure_train_colab_import_deps() -> None:
 
 
 _ensure_train_colab_import_deps()
-from train_colab import load_train_valid_frames  # noqa: E402
+from training_runtime import load_train_valid_frames  # noqa: E402
 
 
 class TrainColabLoadingTests(unittest.TestCase):
@@ -60,18 +60,21 @@ class TrainColabLoadingTests(unittest.TestCase):
 
         with (
             patch(
-                "train_colab.load_split_numpy",
+                "training_runtime.load_split_numpy",
                 side_effect=[
                     (x_train, y_train, era_train, id_train),
                     (x_valid, y_valid, era_valid, id_valid),
                 ],
             ),
-            patch("train_colab.load_benchmark_frame", return_value=object()),
             patch(
-                "train_colab.align_bench_to_ids",
-                side_effect=lambda ids, _bench, _id_col: (np.zeros((len(ids), 1), dtype=np.float32), ["bm"]),
+                "training_runtime.load_and_align_benchmarks",
+                return_value=SimpleNamespace(
+                    train=np.zeros((len(id_train), 1), dtype=np.float32),
+                    valid=np.zeros((len(id_valid), 1), dtype=np.float32),
+                    all=np.zeros((len(id_train) + len(id_valid), 1), dtype=np.float32),
+                    cols=["bm"],
+                ),
             ),
-            patch("train_colab.pl.concat", return_value=object()),
         ):
             data = load_train_valid_frames(
                 cfg,

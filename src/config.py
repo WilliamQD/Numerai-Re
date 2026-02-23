@@ -193,8 +193,6 @@ class InferenceRuntimeConfig:
     max_abs_exposure: float = 0.30
     exposure_sample_rows: int = 200_000
     exposure_sample_seed: int = 0
-    allow_dataset_version_mismatch: bool = False
-    allow_features_by_model_missing: bool = False
 
     @classmethod
     def from_env(cls) -> "InferenceRuntimeConfig":
@@ -229,8 +227,6 @@ class InferenceRuntimeConfig:
             max_abs_exposure=max_abs_exposure,
             exposure_sample_rows=exposure_sample_rows,
             exposure_sample_seed=int(os.getenv("EXPOSURE_SAMPLE_SEED", "0")),
-            allow_dataset_version_mismatch=_optional_bool_env("ALLOW_DATASET_VERSION_MISMATCH", default=False),
-            allow_features_by_model_missing=_optional_bool_env("ALLOW_FEATURES_BY_MODEL_MISSING", default=False),
         )
 
 

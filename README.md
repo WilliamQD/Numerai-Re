@@ -141,8 +141,6 @@ This repository implements a **remote-train / auto-submit** pipeline:
 | `EXPOSURE_SAMPLE_ROWS` | `src/inference.py` | `200000` | Number of rows to sample for feature exposure drift-guard check. |
 | `EXPOSURE_SAMPLE_SEED` | `src/inference.py` | `0` | Random seed for the exposure sampling step. |
 | `NUMERAI_DATASET_VERSION` | `src/inference.py` | `v5.2` | Override NumerAI dataset version for live data. |
-| `ALLOW_DATASET_VERSION_MISMATCH` | `src/inference.py` | `false` | Explicitly allow inference with manifest/runtime dataset-version mismatch (not recommended). |
-| `ALLOW_FEATURES_BY_MODEL_MISSING` | `src/inference.py` | `false` | Allow legacy artifacts without `features_by_model.json` (otherwise inference hard-fails). |
 | `MIN_PRED_STD` | `src/inference.py` | `1e-6` | Drift guard minimum prediction standard deviation threshold. |
 | `MAX_ABS_EXPOSURE` | `src/inference.py` | `0.30` | Drift guard maximum absolute feature exposure threshold. |
 

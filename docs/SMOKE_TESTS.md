@@ -8,3 +8,6 @@ python -m tools.validate_pipeline --dry-run
 TRAIN_DRY_RUN=true python src/train_colab.py
 INFER_DRY_RUN=true python src/inference.py
 ```
+
+Notes:
+- `python -m tools.validate_pipeline --dry-run` now skips artifact-file checks when `artifacts/` is absent and still validates runtime/source contracts.
