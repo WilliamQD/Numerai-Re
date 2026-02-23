@@ -26,14 +26,14 @@ def _write_test_parquet(path: Path, n_rows: int = 20, seed: int = 0) -> list[str
 
 
 class LoadSplitNumpyTests(unittest.TestCase):
-    def test_float32_output(self) -> None:
+    def test_float32_hint_preserves_parquet_dtype(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "split.parquet"
             features = _write_test_parquet(path)
             x, y, era, row_id = load_split_numpy(
                 path, features, "id", "era", "target", feature_dtype=np.float32
             )
-            self.assertEqual(x.dtype, np.float32)
+            self.assertTrue(np.issubdtype(x.dtype, np.integer))
             self.assertEqual(y.dtype, np.float32)
             # 2 null targets were inserted → 20 - 2 = 18 rows
             self.assertEqual(x.shape, (18, len(features)))

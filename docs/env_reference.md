@@ -19,7 +19,7 @@ Canonical runtime parsers:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `WANDB_MODEL_NAME` | `lgbm_numerai_v52` | W&B model registry name used by train/inference. |
-| `USE_INT8_PARQUET` | `true` | Prefer int8 Numerai parquet variants when available. |
+| `USE_INT8_PARQUET` | `true` | Prefer int8 feature loading; runtime infers feature-column integer schema from parquet content instead of filename suffix. |
 | `STATUS_UPDATE_SECONDS` | `60` | Long-phase status refresh cadence (single-line if interactive, compact log fallback otherwise). |
 | `TRAIN_DRY_RUN` | `false` | Run synthetic training smoke path and print `TRAIN_DRY_RUN_OK`. |
 | `INFER_DRY_RUN` | `false` | Run inference smoke path and print `INFER_DRY_RUN_OK`. |
@@ -90,3 +90,5 @@ Canonical runtime parsers:
 | `REPO_DIR` | `/content/Numerai-Re` | Repo clone path in Colab runtime. |
 | `PERSISTENT_ROOT` | `/content/drive/MyDrive/Numerai-Re` | Persistent drive root used by notebook setup. |
 | `COLAB_ENV_PATH` | `/content/drive/MyDrive/Numerai-Re/.env.colab` | Drive-first env file loaded by the Colab notebook setup cell. |
+| `COLAB_DRIVE_DATA_ROOT` | `/content/drive/MyDrive/Numerai-Re/datasets/numerai` | Drive dataset cache root used as sync source for local training data. |
+| `COLAB_SYNC_DATA_FROM_DRIVE` | `true` | When enabled, notebook setup copies required v5.x parquet files from Drive cache to local `NUMERAI_DATA_DIR` when missing. |

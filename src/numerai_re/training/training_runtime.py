@@ -9,6 +9,7 @@ import time
 
 import lightgbm as lgb
 import numpy as np
+import polars as pl
 import wandb
 from numerapi import NumerAPI
 
@@ -86,14 +87,32 @@ def _log_split_resolution(split: str, resolution: SplitParquetResolution) -> Non
 		candidate_preview,
 	)
 	if resolution.use_int8_requested and not resolution.int8_candidates:
-		logger.warning(
-			"phase=int8_dataset_fallback split=%s dataset_version=%s reason=int8_not_found selected=%s candidate_count=%d candidates_preview=%s",
+		logger.debug(
+			"phase=int8_named_variant_absent split=%s dataset_version=%s selected=%s candidate_count=%d candidates_preview=%s",
 			split,
 			resolution.dataset_version,
 			resolution.selected,
 			len(resolution.candidates),
 			candidate_preview,
 		)
+
+
+def _is_integer_like_dtype(dtype: Any) -> bool:
+	dtype_name = str(dtype).lower()
+	return "int" in dtype_name
+
+
+def _split_feature_dtype_name(parquet_path: Path) -> str:
+	try:
+		schema = pl.read_parquet_schema(str(parquet_path))
+	except Exception:
+		return "unknown"
+	feature_dtypes = [dtype for column, dtype in schema.items() if column.startswith("feature")]
+	if not feature_dtypes:
+		return "unknown"
+	if all(_is_integer_like_dtype(dtype) for dtype in feature_dtypes):
+		return "int8"
+	return "float32"
 
 
 def _lgb_status_callback(
@@ -194,19 +213,6 @@ def download_with_numerapi(
 
 	train_dataset = train_resolution.selected
 	validation_dataset = validation_resolution.selected
-	use_int8_effective = train_resolution.selected_is_int8 and validation_resolution.selected_is_int8
-	if cfg.use_int8_parquet and not use_int8_effective:
-		logger.warning(
-			"phase=int8_dtype_disabled reason=resolved_paths_not_both_int8 train_selected=%s validation_selected=%s",
-			train_dataset,
-			validation_dataset,
-		)
-	elif cfg.use_int8_parquet:
-		logger.info(
-			"phase=int8_dtype_enabled reason=both_splits_int8 train_selected=%s validation_selected=%s",
-			train_dataset,
-			validation_dataset,
-		)
 
 	required_files = (
 		(train_dataset, train_path),
@@ -220,6 +226,26 @@ def download_with_numerapi(
 		logger.info("phase=dataset_downloading dataset=%s path=%s", dataset_path, local_path)
 		napi.download_dataset(dataset_path, str(local_path))
 
+	train_dtype_name = _split_feature_dtype_name(train_path)
+	validation_dtype_name = _split_feature_dtype_name(validation_path)
+	use_int8_effective = (
+		cfg.use_int8_parquet
+		and train_dtype_name == "int8"
+		and validation_dtype_name == "int8"
+	)
+	if cfg.use_int8_parquet and use_int8_effective:
+		logger.info(
+			"phase=int8_dtype_enabled reason=parquet_schema_detected train_feature_dtype=%s validation_feature_dtype=%s",
+			train_dtype_name,
+			validation_dtype_name,
+		)
+	elif cfg.use_int8_parquet:
+		logger.info(
+			"phase=int8_dtype_disabled reason=parquet_schema_not_int8 train_feature_dtype=%s validation_feature_dtype=%s",
+			train_dtype_name,
+			validation_dtype_name,
+		)
+
 	benchmark_paths = download_benchmark_parquets(
 		napi,
 		cfg.dataset_version,
@@ -229,8 +255,8 @@ def download_with_numerapi(
 	selection = DatasetSelection(
 		train_dataset=train_dataset,
 		validation_dataset=validation_dataset,
-		train_is_int8=train_resolution.selected_is_int8,
-		validation_is_int8=validation_resolution.selected_is_int8,
+		train_is_int8=train_dtype_name == "int8",
+		validation_is_int8=validation_dtype_name == "int8",
 		feature_dtype=np.int8 if use_int8_effective else np.float32,
 	)
 	return train_path, validation_path, features_path, benchmark_paths, selection

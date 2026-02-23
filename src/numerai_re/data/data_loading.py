@@ -87,9 +87,9 @@ def load_split_numpy(
     Parameters
     ----------
     feature_dtype:
-        Numpy dtype to cast feature columns to.  Use ``np.int8`` when loading
-        Numerai int8 parquet files to keep memory footprint 4× smaller than
-        the default ``np.float32``.
+        Desired feature dtype hint. ``np.int8`` enforces explicit Int8 downcast.
+        ``np.float32`` avoids eager upcast at load time and preserves parquet
+        feature dtype to reduce transient memory pressure.
     use_cache:
         When *True*, save/reload the processed numpy arrays next to the parquet
         file under a ``_np_cache/`` sub-directory.  Speeds up session restarts
@@ -129,7 +129,7 @@ def load_split_numpy(
         time.monotonic() - stage_start,
     )
     frame = frame.filter(pl.col(target_col).is_not_null())
-    if downcast:
+    if downcast and np.dtype(feature_dtype) == np.dtype(np.int8):
         frame = frame.with_columns(pl.col(feature_cols).cast(_polars_dtype_for(feature_dtype), strict=False))
     x = frame.select(feature_cols).to_numpy()
     y = frame.get_column(target_col).to_numpy().astype(np.float32, copy=False)

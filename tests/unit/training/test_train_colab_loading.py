@@ -34,10 +34,40 @@ def _ensure_train_colab_import_deps() -> None:
 
 
 _ensure_train_colab_import_deps()
-from numerai_re.training.training_runtime import load_train_valid_frames  # noqa: E402
+from numerai_re.training import training_runtime as _training_runtime  # noqa: E402
+from numerai_re.training.training_runtime import _split_feature_dtype_name, load_train_valid_frames  # noqa: E402
 
 
 class TrainColabLoadingTests(unittest.TestCase):
+    def test_split_feature_dtype_detects_int8_schema(self) -> None:
+        int8_dtype = "Int8"
+        float_dtype = "Float32"
+        with (
+            patch("numerai_re.training.training_runtime.pl.Int8", new=int8_dtype, create=True),
+            patch("numerai_re.training.training_runtime.pl.Float32", new=float_dtype, create=True),
+            patch(
+                "numerai_re.training.training_runtime.pl.read_parquet_schema",
+                return_value={"feature_0": int8_dtype, "target": float_dtype},
+                create=True,
+            ),
+        ):
+            detected = _split_feature_dtype_name(Path("/tmp/train.parquet"))
+        self.assertEqual(detected, "int8")
+
+    def test_split_feature_dtype_detects_non_int8_schema(self) -> None:
+        int8_dtype = "Int8"
+        float_dtype = "Float32"
+        with (
+            patch("numerai_re.training.training_runtime.pl.Int8", new=int8_dtype, create=True),
+            patch(
+                "numerai_re.training.training_runtime.pl.read_parquet_schema",
+                return_value={"feature_0": float_dtype, "target": float_dtype},
+                create=True,
+            ),
+        ):
+            detected = _split_feature_dtype_name(Path("/tmp/train.parquet"))
+        self.assertEqual(detected, "float32")
+
     def test_preserves_split_order_without_resorting(self) -> None:
         cfg = SimpleNamespace(
             dataset_version="v5.2",
