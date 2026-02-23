@@ -312,6 +312,9 @@ def load_train_valid_frames(
 		id_all=id_all,
 		benchmark_paths=benchmark_paths,
 		id_col=cfg.id_col,
+		drop_sparse_columns=cfg.bench_drop_sparse_columns,
+		max_null_ratio_per_column=cfg.bench_max_null_ratio_per_column,
+		min_benchmark_columns=cfg.bench_min_columns,
 	)
 
 	return LoadedData(

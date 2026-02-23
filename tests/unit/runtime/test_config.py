@@ -39,6 +39,29 @@ class TrainRuntimeConfigTests(unittest.TestCase):
             cfg = TrainRuntimeConfig.from_env()
         self.assertFalse(cfg.use_int8_parquet)
 
+    def test_benchmark_sparse_filter_defaults(self) -> None:
+        with patch.dict(os.environ, {"WANDB_API_KEY": "dummy-key"}, clear=True):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertTrue(cfg.bench_drop_sparse_columns)
+        self.assertEqual(cfg.bench_max_null_ratio_per_column, 0.0)
+        self.assertEqual(cfg.bench_min_columns, 1)
+
+    def test_benchmark_sparse_filter_env_overrides(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WANDB_API_KEY": "dummy-key",
+                "BENCH_DROP_SPARSE_COLUMNS": "false",
+                "BENCH_MAX_NULL_RATIO_PER_COLUMN": "0.2",
+                "BENCH_MIN_COLUMNS": "3",
+            },
+            clear=True,
+        ):
+            cfg = TrainRuntimeConfig.from_env()
+        self.assertFalse(cfg.bench_drop_sparse_columns)
+        self.assertEqual(cfg.bench_max_null_ratio_per_column, 0.2)
+        self.assertEqual(cfg.bench_min_columns, 3)
+
 
 class InferenceRuntimeConfigTests(unittest.TestCase):
     def test_inference_config_loads_required_fields(self) -> None:

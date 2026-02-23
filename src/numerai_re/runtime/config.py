@@ -53,6 +53,9 @@ class TrainRuntimeConfig:
     use_int8_parquet: bool = True
     load_backend: str = "polars"
     load_mode: str = "in_memory"
+    bench_drop_sparse_columns: bool = True
+    bench_max_null_ratio_per_column: float = 0.0
+    bench_min_columns: int = 1
 
     @classmethod
     def from_env(cls) -> "TrainRuntimeConfig":
@@ -128,6 +131,14 @@ class TrainRuntimeConfig:
         if blend_use_windows <= 0:
             raise ValueError("Invalid BLEND_USE_WINDOWS. Expected positive integer.")
 
+        bench_max_null_ratio_per_column = float(os.getenv("BENCH_MAX_NULL_RATIO_PER_COLUMN", "0.0"))
+        if bench_max_null_ratio_per_column < 0.0 or bench_max_null_ratio_per_column > 1.0:
+            raise ValueError("Invalid BENCH_MAX_NULL_RATIO_PER_COLUMN. Expected value in [0.0, 1.0].")
+
+        bench_min_columns = int(os.getenv("BENCH_MIN_COLUMNS", "1"))
+        if bench_min_columns <= 0:
+            raise ValueError("Invalid BENCH_MIN_COLUMNS. Expected positive integer.")
+
         return cls(
             dataset_version=dataset_version,
             feature_set_name=os.getenv("NUMERAI_FEATURE_SET", "all"),
@@ -177,6 +188,9 @@ class TrainRuntimeConfig:
             use_int8_parquet=_optional_bool_env("USE_INT8_PARQUET", default=True),
             load_backend=os.getenv("LOAD_BACKEND", "polars").strip().lower() or "polars",
             load_mode=os.getenv("LOAD_MODE", "in_memory").strip().lower() or "in_memory",
+            bench_drop_sparse_columns=_optional_bool_env("BENCH_DROP_SPARSE_COLUMNS", default=True),
+            bench_max_null_ratio_per_column=bench_max_null_ratio_per_column,
+            bench_min_columns=bench_min_columns,
         )
 
 

@@ -1,6 +1,6 @@
 lightgbm==4.3.0
 numerapi==2.19.0
-wandb==0.17.0
+wandb==0.25.0
 pandas==2.2.0
 numpy==1.26.0
 pyarrow==16.0.0
