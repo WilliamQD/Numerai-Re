@@ -88,4 +88,5 @@ Canonical runtime parsers:
 | --- | --- | --- |
 | `REPO_REF` | unset | Optional pinned 40-char commit SHA checkout. |
 | `REPO_DIR` | `/content/Numerai-Re` | Repo clone path in Colab runtime. |
-| `PERSISTENT_ROOT` | `/content/drive/MyDrive/Numerai-Re` | Persistent drive root used by setup/bootstrap. |
+| `PERSISTENT_ROOT` | `/content/drive/MyDrive/Numerai-Re` | Persistent drive root used by notebook setup. |
+| `COLAB_ENV_PATH` | `/content/drive/MyDrive/Numerai-Re/.env.colab` | Drive-first env file loaded by the Colab notebook setup cell. |

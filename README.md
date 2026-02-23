@@ -25,7 +25,6 @@ This repository runs a **remote-train / auto-submit** system:
 │  ├─ env_reference.md
 │  └─ SMOKE_TESTS.md
 ├─ notebooks/
-├─ scripts/
 ├─ src/
 │  └─ numerai_re/
 │     ├─ cli/            # train/infer/promote entry modules

@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 *.pyo
 .env
+.env.colab
+.env.colab.local
 *.parquet
 artifacts/
 live.parquet
