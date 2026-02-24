@@ -25,6 +25,7 @@ class TrainRuntimeConfig:
     numerai_public_id: str | None = None
     numerai_secret_key: str | None = None
     numerai_data_dir: Path = Path("/content/numerai_data")
+    training_checkpoint_dir: Path | None = None
     lgbm_device: str = "cpu"
     lgbm_learning_rate: float = 0.02
     lgbm_num_leaves: int = 128
@@ -41,6 +42,7 @@ class TrainRuntimeConfig:
     walkforward_purge_eras: int = 8
     walkforward_max_windows: int = 4
     walkforward_tune_seed: int | None = None
+    walkforward_resume_mode: str = "auto"
     walkforward_log_models: bool = False
     payout_weight_corr: float = 0.75
     payout_weight_bmc: float = 2.25
@@ -48,6 +50,7 @@ class TrainRuntimeConfig:
     bench_neutralize_prop_grid: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
     blend_tune_seed: int | None = None
     blend_use_windows: int | None = None
+    blend_tune_resume_mode: str = "auto"
     max_features_per_model: int = 1200
     feature_sampling_strategy: str = "sharded_shuffle"
     feature_sampling_master_seed: int = 0
@@ -126,6 +129,9 @@ class TrainRuntimeConfig:
         walkforward_tune_seed = int(walkforward_tune_seed_raw.strip()) if walkforward_tune_seed_raw else lgbm_seeds[0]
         if walkforward_tune_seed not in lgbm_seeds:
             raise ValueError("Invalid WALKFORWARD_TUNE_SEED. Expected a value from LGBM_SEEDS.")
+        walkforward_resume_mode = os.getenv("WALKFORWARD_RESUME_MODE", "auto").strip().lower() or "auto"
+        if walkforward_resume_mode not in {"auto", "fresh", "strict"}:
+            raise ValueError("Invalid WALKFORWARD_RESUME_MODE. Expected one of: auto, fresh, strict.")
 
         blend_tune_seed_raw = os.getenv("BLEND_TUNE_SEED")
         blend_tune_seed = int(blend_tune_seed_raw.strip()) if blend_tune_seed_raw else walkforward_tune_seed
@@ -134,6 +140,9 @@ class TrainRuntimeConfig:
         blend_use_windows = int(os.getenv("BLEND_USE_WINDOWS", str(walkforward_max_windows)))
         if blend_use_windows <= 0:
             raise ValueError("Invalid BLEND_USE_WINDOWS. Expected positive integer.")
+        blend_tune_resume_mode = os.getenv("BLEND_TUNE_RESUME_MODE", "auto").strip().lower() or "auto"
+        if blend_tune_resume_mode not in {"auto", "fresh", "strict"}:
+            raise ValueError("Invalid BLEND_TUNE_RESUME_MODE. Expected one of: auto, fresh, strict.")
 
         bench_max_null_ratio_per_column = float(os.getenv("BENCH_MAX_NULL_RATIO_PER_COLUMN", "0.0"))
         if bench_max_null_ratio_per_column < 0.0 or bench_max_null_ratio_per_column > 1.0:
@@ -178,6 +187,11 @@ class TrainRuntimeConfig:
             numerai_public_id=numerai_public_id,
             numerai_secret_key=numerai_secret_key,
             numerai_data_dir=Path(os.getenv("NUMERAI_DATA_DIR", "/content/numerai_data")),
+            training_checkpoint_dir=(
+                Path(os.getenv("TRAINING_CHECKPOINT_DIR", "").strip())
+                if os.getenv("TRAINING_CHECKPOINT_DIR", "").strip()
+                else None
+            ),
             lgbm_device=lgbm_device,
             num_boost_round=num_boost_round,
             walkforward_num_boost_round=walkforward_num_boost_round,
@@ -197,6 +211,7 @@ class TrainRuntimeConfig:
             walkforward_purge_eras=walkforward_purge_eras,
             walkforward_max_windows=walkforward_max_windows,
             walkforward_tune_seed=walkforward_tune_seed,
+            walkforward_resume_mode=walkforward_resume_mode,
             walkforward_log_models=_optional_bool_env("WALKFORWARD_LOG_MODELS", default=False),
             payout_weight_corr=float(os.getenv("PAYOUT_WEIGHT_CORR", "0.75")),
             payout_weight_bmc=float(os.getenv("PAYOUT_WEIGHT_BMC", "2.25")),
@@ -210,6 +225,7 @@ class TrainRuntimeConfig:
             ),
             blend_tune_seed=blend_tune_seed,
             blend_use_windows=blend_use_windows,
+            blend_tune_resume_mode=blend_tune_resume_mode,
             max_features_per_model=int(os.getenv("MAX_FEATURES_PER_MODEL", "1200")),
             feature_sampling_strategy=os.getenv("FEATURE_SAMPLING_STRATEGY", "sharded_shuffle").strip()
             or "sharded_shuffle",

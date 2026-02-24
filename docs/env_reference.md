@@ -29,6 +29,7 @@ Canonical runtime parsers:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `NUMERAI_DATA_DIR` | environment-specific | Dataset/cache/checkpoint root path. |
+| `TRAINING_CHECKPOINT_DIR` | unset | Optional dedicated root for training checkpoints (for example Drive), independent from `NUMERAI_DATA_DIR`. |
 | `NUMERAI_PUBLIC_ID` | unset | Optional authenticated download key for training data. |
 | `NUMERAI_SECRET_KEY` | unset | Optional authenticated download secret for training data. |
 | `NUMERAI_FEATURE_SET` | `all` | Feature set key from Numerai `features.json` (`small`/`medium`/`all`). |
@@ -68,11 +69,13 @@ Canonical runtime parsers:
 | `BENCH_NEUTRALIZE_PROP_GRID` | `0.0,0.25,0.5,0.75,1.0` | Neutralization strength candidates. |
 | `BLEND_TUNE_SEED` | `WALKFORWARD_TUNE_SEED` | Seed used for blend tuning windows. |
 | `BLEND_USE_WINDOWS` | `WALKFORWARD_MAX_WINDOWS` | Number of windows used in blend tuning. |
+| `BLEND_TUNE_RESUME_MODE` | `auto` | Blend-stage checkpoint mode (blend-window cache + blend-grid search): `auto` resumes when compatible and restarts on mismatch, `fresh` always restarts, `strict` requires exact checkpoint compatibility. |
 | `WALKFORWARD_ENABLED` | `true` | Enable walk-forward pre-fit tuning. |
 | `WALKFORWARD_CHUNK_SIZE` | `156` | Eras per walk-forward chunk. |
 | `WALKFORWARD_PURGE_ERAS` | `8` | Era gap between train/validation windows. |
 | `WALKFORWARD_MAX_WINDOWS` | `4` | Max recent windows to evaluate. |
 | `WALKFORWARD_TUNE_SEED` | first `LGBM_SEEDS` | Seed used for walk-forward tuning. |
+| `WALKFORWARD_RESUME_MODE` | `auto` | Walk-forward checkpoint mode: `auto` resumes compatible windows and restarts on mismatch, `fresh` always restarts, `strict` requires exact checkpoint compatibility. |
 | `WALKFORWARD_LOG_MODELS` | `false` | Whether to log per-window models. |
 
 ## Inference Variables

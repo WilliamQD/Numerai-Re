@@ -3,11 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
 import wandb
 
 from numerai_re.common.status_reporter import RuntimeStatusReporter
+from numerai_re.training.checkpoint_io import (
+    load_signature_checkpoint,
+    payload_list,
+    write_signature_checkpoint,
+)
 from numerai_re.metrics.numerai_metrics import bmc_mean_per_era, gauss_rank_by_era, mean_per_era_numerai_corr
 from numerai_re.inference.postprocess import PostprocessConfig, apply_postprocess
 
@@ -53,6 +59,8 @@ def tune_blend_on_windows(
     payout_weight_bmc: float,
     *,
     status: RuntimeStatusReporter | None = None,
+    checkpoint_path: Path | None = None,
+    resume_mode: str = "auto",
 ) -> BlendTuneReport:
     search_rows: list[dict[str, float]] = []
     best_row: dict[str, float] | None = None
@@ -60,6 +68,32 @@ def tune_blend_on_windows(
     total_combos = len(alpha_grid) * len(prop_grid)
     combo_index = 0
     tune_start = time.monotonic()
+
+    def _combo_key(alpha: float, prop: float) -> str:
+        return f"{float(alpha):.12g}|{float(prop):.12g}"
+
+    def _window_signature(window: dict[str, np.ndarray | int]) -> dict[str, int]:
+        bench = window["bench"]  # type: ignore[index]
+        target = window["target"]  # type: ignore[index]
+        return {
+            "window_id": int(window["window_id"]),  # type: ignore[arg-type]
+            "n_rows": int(target.shape[0]),
+            "n_bench_cols": int(bench.shape[1]),
+        }
+
+    def _build_signature(prepared: list[dict[str, np.ndarray | int]]) -> dict[str, object]:
+        return {
+            "alpha_grid": [float(v) for v in alpha_grid],
+            "prop_grid": [float(v) for v in prop_grid],
+            "payout_weight_corr": float(payout_weight_corr),
+            "payout_weight_bmc": float(payout_weight_bmc),
+            "windows": [_window_signature(window) for window in prepared],
+        }
+
+    def _write_checkpoint(rows: list[dict[str, float]], signature: dict[str, object]) -> None:
+        if checkpoint_path is None:
+            return
+        write_signature_checkpoint(checkpoint_path, signature, {"search_rows": rows})
 
     prepared_windows: list[dict[str, np.ndarray | int]] = []
     for window in windows:
@@ -69,6 +103,49 @@ def tune_blend_on_windows(
         for idx in range(bench.shape[1]):
             bench_gauss[:, idx] = gauss_rank_by_era(bench[:, idx], era)
         prepared_windows.append({**window, "bench_gauss": bench_gauss})
+
+    signature = _build_signature(prepared_windows)
+
+    done_rows_by_key: dict[str, dict[str, float]] = {}
+    payload = (
+        load_signature_checkpoint(
+            path=checkpoint_path,
+            expected_signature=signature,
+            resume_mode=resume_mode,
+            logger=logger,
+            phase_name="blend_tune",
+        )
+        if checkpoint_path is not None
+        else None
+    )
+    for row in payload_list(payload, "search_rows"):
+        if not isinstance(row, dict):
+            continue
+        alpha = float(row.get("alpha", np.nan))
+        prop = float(row.get("prop", np.nan))
+        if np.isnan(alpha) or np.isnan(prop):
+            continue
+        done_rows_by_key[_combo_key(alpha, prop)] = {
+            "alpha": alpha,
+            "prop": prop,
+            "hit_rate": float(row.get("hit_rate", np.nan)),
+            "mean_score": float(row.get("mean_score", np.nan)),
+            "mean_corr": float(row.get("mean_corr", np.nan)),
+            "mean_bmc": float(row.get("mean_bmc", np.nan)),
+        }
+    if done_rows_by_key:
+        search_rows = list(done_rows_by_key.values())
+        for row in search_rows:
+            metrics = (row["hit_rate"], row["mean_score"], row["mean_corr"])
+            if best_row is None or best_metrics is None or metrics > best_metrics:
+                best_row = row
+                best_metrics = metrics
+        logger.info(
+            "phase=blend_tune_checkpoint_loaded path=%s completed=%d total=%d",
+            checkpoint_path,
+            len(done_rows_by_key),
+            total_combos,
+        )
 
     logger.info(
         "phase=blend_tune_started n_windows=%d total_combos=%d payout_weight_corr=%.3f payout_weight_bmc=%.3f",
@@ -81,6 +158,9 @@ def tune_blend_on_windows(
     for alpha in alpha_grid:
         for prop in prop_grid:
             combo_index += 1
+            key = _combo_key(float(alpha), float(prop))
+            if key in done_rows_by_key:
+                continue
             combo_start = time.monotonic()
             scores: list[float] = []
             corrs: list[float] = []
@@ -135,23 +215,28 @@ def tune_blend_on_windows(
                 "mean_bmc": float(np.mean(bmc_arr)),
             }
             search_rows.append(row)
+            done_rows_by_key[key] = row
             metrics = (row["hit_rate"], row["mean_score"], row["mean_corr"])
             if best_row is None or metrics > best_metrics:
                 best_row = row
                 best_metrics = metrics
+            _write_checkpoint(search_rows, signature)
 
             elapsed_s = max(0.0, time.monotonic() - tune_start)
             combo_elapsed_s = max(0.0, time.monotonic() - combo_start)
-            eta_s = (elapsed_s / combo_index) * max(total_combos - combo_index, 0)
+            completed = len(done_rows_by_key)
+            eta_s = (elapsed_s / completed) * max(total_combos - completed, 0) if completed > 0 else 0.0
             logger.info(
-                "phase=blend_tune_progress combo=%d total=%d alpha=%.2f prop=%.2f combo_elapsed_s=%.1f elapsed_s=%.1f eta_s=%.1f",
-                combo_index,
+                "phase=blend_tune_progress combo=%d total=%d alpha=%.2f prop=%.2f combo_elapsed_s=%.1f elapsed_s=%.1f eta_s=%.1f elapsed_min=%.2f eta_min=%.2f",
+                completed,
                 total_combos,
                 float(alpha),
                 float(prop),
                 combo_elapsed_s,
                 elapsed_s,
                 eta_s,
+                elapsed_s / 60.0,
+                eta_s / 60.0,
             )
 
     if best_row is None:

@@ -36,6 +36,7 @@ from numerai_re.training.training_seed_runner import (
 )
 from numerai_re.training.training_tuning import WalkforwardReport, collect_blend_windows, evaluate_walkforward
 from numerai_re.training.tune_blend import BlendTuneReport, tune_blend_on_windows
+from numerai_re.training.checkpoint_io import count_list_items
 
 from numerai_re.contracts.artifact_contract import FEATURES_BY_MODEL_FILENAME
 
@@ -63,13 +64,16 @@ def train() -> None:
         projected_total = (elapsed_total / completed_phases) * total_phases
         eta_seconds = max(0.0, projected_total - elapsed_total)
         logger.info(
-            "phase=train_eta_progress stage=%s completed=%d total=%d elapsed_seconds=%.2f projected_total_seconds=%.2f eta_seconds=%.2f",
+            "phase=train_eta_progress stage=%s completed=%d total=%d elapsed_seconds=%.2f projected_total_seconds=%.2f eta_seconds=%.2f elapsed_minutes=%.2f projected_total_minutes=%.2f eta_minutes=%.2f",
             phase_name,
             completed_phases,
             total_phases,
             elapsed_total,
             projected_total,
             eta_seconds,
+            elapsed_total / 60.0,
+            projected_total / 60.0,
+            eta_seconds / 60.0,
         )
 
     cfg = TrainRuntimeConfig.from_env()
@@ -167,12 +171,43 @@ def train() -> None:
         "feature_neutralize_n_features": 0,
         "feature_neutralize_seed": 0,
     }
+    checkpoint_dir = _checkpoint_dir(cfg)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    walkforward_checkpoint_path = checkpoint_dir / "walkforward_checkpoint.json"
+    blend_windows_checkpoint_path = checkpoint_dir / "blend_windows_checkpoint.json"
+    blend_tune_checkpoint_path = checkpoint_dir / "blend_tune_checkpoint.json"
+    seed_checkpoint_path = checkpoint_dir / CHECKPOINT_FILENAME
+    logger.info(
+        "phase=resume_state_summary checkpoint_dir=%s walkforward_windows_restored=%d blend_windows_restored=%d blend_combos_restored=%d seed_models_restored=%d",
+        checkpoint_dir,
+        count_list_items(walkforward_checkpoint_path, "rows"),
+        count_list_items(blend_windows_checkpoint_path, "windows"),
+        count_list_items(blend_tune_checkpoint_path, "search_rows"),
+        count_list_items(seed_checkpoint_path, "members"),
+    )
     recommended_iter: int | None = None
     if cfg.walkforward_enabled:
         walkforward_started = perf_counter()
-        wf_report = evaluate_walkforward(cfg, lgb_params, base_data, logger=logger, status=status)
+        wf_report = evaluate_walkforward(
+            cfg,
+            lgb_params,
+            base_data,
+            logger=logger,
+            status=status,
+            checkpoint_path=walkforward_checkpoint_path,
+            resume_mode=cfg.walkforward_resume_mode,
+        )
         recommended_iter = int(wf_report.recommended_num_iteration)
-        blend_windows = collect_blend_windows(cfg, lgb_params, base_data, wf_report, logger=logger, status=status)
+        blend_windows = collect_blend_windows(
+            cfg,
+            lgb_params,
+            base_data,
+            wf_report,
+            logger=logger,
+            status=status,
+            checkpoint_dir=checkpoint_dir,
+            resume_mode=cfg.blend_tune_resume_mode,
+        )
         blend_report = tune_blend_on_windows(
             windows=blend_windows,
             alpha_grid=cfg.blend_alpha_grid,
@@ -180,6 +215,8 @@ def train() -> None:
             payout_weight_corr=float(cfg.payout_weight_corr),
             payout_weight_bmc=float(cfg.payout_weight_bmc),
             status=status,
+            checkpoint_path=blend_tune_checkpoint_path,
+            resume_mode=cfg.blend_tune_resume_mode,
         )
         checkpoint_walkforward = {
             "enabled": True,
@@ -213,8 +250,6 @@ def train() -> None:
     del base_data
     gc.collect()
 
-    checkpoint_dir = _checkpoint_dir(cfg)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / CHECKPOINT_FILENAME
     features_by_model_path = checkpoint_dir / FEATURES_BY_MODEL_FILENAME
 

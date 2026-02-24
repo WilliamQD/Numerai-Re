@@ -4,6 +4,7 @@ import gc
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import lightgbm as lgb
@@ -11,6 +12,7 @@ import numpy as np
 import wandb
 
 from numerai_re.common.status_reporter import RuntimeStatusReporter
+from numerai_re.training.checkpoint_io import load_signature_checkpoint, payload_list, write_signature_checkpoint
 from numerai_re.metrics.numerai_metrics import mean_per_era_numerai_corr
 from numerai_re.training.walkforward import build_windows
 
@@ -63,6 +65,8 @@ def evaluate_walkforward(
     *,
     logger: logging.Logger,
     status: RuntimeStatusReporter | None = None,
+    checkpoint_path: Path | None = None,
+    resume_mode: str = "auto",
 ) -> WalkforwardReport:
     windows = build_windows(
         era_numbers=data.era_all_int,
@@ -82,8 +86,105 @@ def evaluate_walkforward(
     best_iters: list[int] = []
     window_corrs: list[float] = []
     total_windows = len(windows)
+    rows_by_window_id: dict[int, dict[str, float | int]] = {}
+
+    wf_signature = {
+        "walkforward_chunk_size": int(cfg.walkforward_chunk_size),
+        "walkforward_purge_eras": int(cfg.walkforward_purge_eras),
+        "walkforward_max_windows": int(cfg.walkforward_max_windows),
+        "walkforward_num_boost_round": int(wf_num_boost_round),
+        "walkforward_tune_seed": int(tune_seed),
+        "corr_scan_period": int(cfg.corr_scan_period),
+        "corr_scan_max_iters": int(cfg.corr_scan_max_iters) if cfg.corr_scan_max_iters is not None else None,
+        "early_stopping_rounds": int(cfg.early_stopping_rounds),
+        "feature_set": str(cfg.feature_set_name),
+        "n_rows": int(data.x_all.shape[0]),
+        "n_features": int(data.x_all.shape[1]),
+        "lgb_params": {str(key): str(value) for key, value in sorted(lgb_params.items())},
+        "windows": [
+            {
+                "window_id": int(window.window_id),
+                "train_end": int(window.train_end),
+                "val_start": int(window.val_start),
+                "val_end": int(window.val_end),
+                "purge_start": int(window.purge_start),
+                "purge_end": int(window.purge_end),
+            }
+            for window in windows
+        ],
+    }
+
+    def _write_checkpoint() -> None:
+        if checkpoint_path is None:
+            return
+        write_signature_checkpoint(
+            checkpoint_path,
+            wf_signature,
+            {
+                "rows": [rows_by_window_id[window.window_id] for window in windows if window.window_id in rows_by_window_id],
+            },
+        )
+
+    payload = (
+        load_signature_checkpoint(
+            path=checkpoint_path,
+            expected_signature=wf_signature,
+            resume_mode=resume_mode,
+            logger=logger,
+            phase_name="walkforward",
+        )
+        if checkpoint_path is not None
+        else None
+    )
+    for item in payload_list(payload, "rows"):
+        if not isinstance(item, dict):
+            continue
+        try:
+            window_id = int(item.get("window_id"))
+            rows_by_window_id[window_id] = {
+                "window_id": window_id,
+                "train_end": int(item["train_end"]),
+                "val_start": int(item["val_start"]),
+                "val_end": int(item["val_end"]),
+                "purge_start": int(item["purge_start"]),
+                "purge_end": int(item["purge_end"]),
+                "best_iter": int(item["best_iter"]),
+                "best_corr": float(item["best_corr"]),
+                "corr_mean_per_era": float(item["corr_mean_per_era"]),
+            }
+        except Exception:
+            continue
+    if rows_by_window_id:
+        logger.info(
+            "phase=walkforward_checkpoint_loaded path=%s completed=%d total=%d",
+            checkpoint_path,
+            len(rows_by_window_id),
+            total_windows,
+        )
 
     for window in windows:
+        cached = rows_by_window_id.get(int(window.window_id))
+        if cached is None:
+            continue
+        rows.append(cached)
+        best_iters.append(int(cached["best_iter"]))
+        window_corrs.append(float(cached["corr_mean_per_era"]))
+        elapsed_s = max(0.0, time.monotonic() - stage_start)
+        eta_s = (elapsed_s / len(rows)) * max(total_windows - len(rows), 0)
+        logger.info(
+            "phase=walkforward_window_restored window_id=%d completed=%d total=%d best_iter=%d corr_mean_per_era=%.6f elapsed_s=%.1f eta_s=%.1f",
+            int(cached["window_id"]),
+            len(rows),
+            total_windows,
+            int(cached["best_iter"]),
+            float(cached["corr_mean_per_era"]),
+            elapsed_s,
+            eta_s,
+        )
+
+    for window in windows:
+        if int(window.window_id) in rows_by_window_id:
+            continue
         if status is not None:
             status.update(
                 "walkforward_window",
@@ -182,8 +283,10 @@ def evaluate_walkforward(
             "corr_mean_per_era": corr_mean_per_era,
         }
         rows.append(row)
+        rows_by_window_id[int(window.window_id)] = row
         best_iters.append(int(best_iter))
         window_corrs.append(corr_mean_per_era)
+        _write_checkpoint()
         elapsed_s = max(0.0, time.monotonic() - stage_start)
         eta_s = (elapsed_s / len(rows)) * max(total_windows - len(rows), 0)
         logger.info(
@@ -260,6 +363,8 @@ def collect_blend_windows(
     *,
     logger: logging.Logger,
     status: RuntimeStatusReporter | None = None,
+    checkpoint_dir: Path | None = None,
+    resume_mode: str = "auto",
 ) -> list[dict[str, np.ndarray | int]]:
     if cfg.blend_tune_seed is None:
         raise RuntimeError(
@@ -272,6 +377,71 @@ def collect_blend_windows(
     logger.info("phase=blend_windows_collection_started n_windows=%d", len(selected_windows))
     wf_num_boost_round = int(getattr(cfg, "walkforward_num_boost_round", cfg.num_boost_round))
     stage_start = time.monotonic()
+
+    cache_dir: Path | None = None
+    cache_manifest_path: Path | None = None
+    cache_signature: dict[str, object] | None = None
+    cached_entries_by_window: dict[int, dict[str, object]] = {}
+    if checkpoint_dir is not None:
+        cache_dir = checkpoint_dir / "blend_windows"
+        cache_manifest_path = checkpoint_dir / "blend_windows_checkpoint.json"
+        cache_signature = {
+            "blend_tune_seed": int(tune_seed),
+            "walkforward_num_boost_round": int(wf_num_boost_round),
+            "bench_min_covered_rows_per_window": int(cfg.bench_min_covered_rows_per_window),
+            "bench_min_covered_eras_per_window": int(cfg.bench_min_covered_eras_per_window),
+            "windows": [
+                {
+                    "window_id": int(row["window_id"]),
+                    "train_end": int(row["train_end"]),
+                    "val_start": int(row["val_start"]),
+                    "val_end": int(row["val_end"]),
+                    "best_iter": int(row["best_iter"]),
+                }
+                for row in selected_windows
+            ],
+        }
+        payload = load_signature_checkpoint(
+            path=cache_manifest_path,
+            expected_signature=cache_signature,
+            resume_mode=resume_mode,
+            logger=logger,
+            phase_name="blend_windows_cache",
+        )
+        for entry in payload_list(payload, "windows"):
+            if not isinstance(entry, dict):
+                continue
+            try:
+                window_id = int(entry.get("window_id"))
+                file_name = str(entry.get("file"))
+            except Exception:
+                continue
+            if file_name:
+                cached_entries_by_window[window_id] = {
+                    "window_id": window_id,
+                    "file": file_name,
+                }
+        if cached_entries_by_window:
+            logger.info(
+                "phase=blend_windows_cache_loaded path=%s cached_windows=%d total=%d",
+                cache_manifest_path,
+                len(cached_entries_by_window),
+                len(selected_windows),
+            )
+
+    def _write_cache_manifest(windows_rows: list[dict[str, np.ndarray | int]]) -> None:
+        if cache_manifest_path is None or cache_signature is None or cache_dir is None:
+            return
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        windows_payload: list[dict[str, object]] = []
+        for item in windows_rows:
+            windows_payload.append(
+                {
+                    "window_id": int(item["window_id"]),
+                    "file": f"blend_window_{int(item['window_id'])}.npz",
+                }
+            )
+        write_signature_checkpoint(cache_manifest_path, cache_signature, {"windows": windows_payload})
 
     rows: list[dict[str, np.ndarray | int]] = []
     total_windows = len(selected_windows)
@@ -311,6 +481,41 @@ def collect_blend_windows(
                 int(cfg.bench_min_covered_eras_per_window),
             )
             continue
+
+        window_id = int(row["window_id"])
+        if cache_dir is not None and window_id in cached_entries_by_window:
+            cache_file = cache_dir / str(cached_entries_by_window[window_id]["file"])
+            if cache_file.exists():
+                try:
+                    cached = np.load(cache_file, allow_pickle=False)
+                    rows.append(
+                        {
+                            "window_id": window_id,
+                            "pred_raw": cached["pred_raw"].astype(np.float32, copy=False),
+                            "target": cached["target"].astype(np.float32, copy=False),
+                            "era": cached["era"],
+                            "bench": cached["bench"].astype(np.float32, copy=False),
+                        }
+                    )
+                    elapsed_s = max(0.0, time.monotonic() - stage_start)
+                    eta_s = (elapsed_s / len(rows)) * max(total_windows - len(rows), 0)
+                    logger.info(
+                        "phase=blend_window_restored selected_window_id=%d completed=%d total=%d elapsed_s=%.1f eta_s=%.1f",
+                        window_id,
+                        len(rows),
+                        total_windows,
+                        elapsed_s,
+                        eta_s,
+                    )
+                    continue
+                except Exception as exc:
+                    if resume_mode == "strict":
+                        raise
+                    logger.warning(
+                        "phase=blend_window_restore_failed selected_window_id=%d action=recompute reason=%s",
+                        window_id,
+                        exc,
+                    )
 
         x_train = data.x_all[train_idx]
         y_train = data.y_all[train_idx]
@@ -381,18 +586,29 @@ def collect_blend_windows(
         gc.collect()
         rows.append(
             {
-                "window_id": int(row["window_id"]),
+                "window_id": window_id,
                 "pred_raw": pred_raw,
                 "target": y_valid.astype(np.float32, copy=False),
                 "era": era_valid,
                 "bench": bench_valid,
             }
         )
+        if cache_dir is not None:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / f"blend_window_{window_id}.npz"
+            np.savez_compressed(
+                cache_file,
+                pred_raw=pred_raw,
+                target=y_valid.astype(np.float32, copy=False),
+                era=era_valid,
+                bench=bench_valid.astype(np.float32, copy=False),
+            )
+            _write_cache_manifest(rows)
         elapsed_s = max(0.0, time.monotonic() - stage_start)
         eta_s = (elapsed_s / len(rows)) * max(total_windows - len(rows), 0)
         logger.info(
             "phase=blend_window_completed selected_window_id=%d completed=%d total=%d covered_rows=%d elapsed_s=%.1f eta_s=%.1f",
-            int(row["window_id"]),
+            window_id,
             len(rows),
             total_windows,
             covered_rows,

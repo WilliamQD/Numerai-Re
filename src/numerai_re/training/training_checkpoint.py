@@ -15,7 +15,10 @@ def member_features_key(member: dict[str, object]) -> str:
 
 
 def checkpoint_dir(cfg: Any) -> Path:
-    return Path(cfg.numerai_data_dir) / str(cfg.dataset_version) / "checkpoints" / str(cfg.model_name)
+    base = getattr(cfg, "training_checkpoint_dir", None)
+    if base is None:
+        base = Path(cfg.numerai_data_dir)
+    return Path(base) / str(cfg.dataset_version) / "checkpoints" / str(cfg.model_name)
 
 
 def write_training_checkpoint(
