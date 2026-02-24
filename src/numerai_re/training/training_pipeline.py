@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import logging
 from pathlib import Path
+from time import perf_counter
 
 from numerai_re.common.status_reporter import RuntimeStatusReporter
 from numerai_re.data.bench_matrix_builder import BenchmarkAlignmentError
@@ -47,6 +48,14 @@ ARTIFACT_SCHEMA_VERSION = 4
 
 
 def train() -> None:
+    total_start = perf_counter()
+    phase_seconds: dict[str, float] = {}
+
+    def _record_phase(phase_name: str, started_at: float) -> None:
+        elapsed = perf_counter() - started_at
+        phase_seconds[phase_name] = phase_seconds.get(phase_name, 0.0) + elapsed
+        logger.info("phase=train_timing phase_name=%s elapsed_seconds=%.2f", phase_name, elapsed)
+
     cfg = TrainRuntimeConfig.from_env()
     logger.info(
         "phase=config_loaded dataset_version=%s feature_set=%s model_name=%s lgbm_device=%s seeds=%s",
@@ -67,10 +76,12 @@ def train() -> None:
         cfg.load_backend,
         cfg.status_update_seconds,
     )
+    dataset_download_started = perf_counter()
     train_path, validation_path, features_path, benchmark_paths, dataset_selection = download_with_numerapi(
         cfg,
         cfg.numerai_data_dir,
     )
+    _record_phase("dataset_download", dataset_download_started)
     logger.info(
         "phase=dataset_selection_summary requested_int8=%s train_selected=%s validation_selected=%s feature_dtype=%s",
         cfg.use_int8_parquet,
@@ -87,6 +98,7 @@ def train() -> None:
     )
     sampled_features_by_seed = sample_features_by_seed(cfg, feature_pool)
     base_seed = int(cfg.walkforward_tune_seed if cfg.walkforward_tune_seed is not None else cfg.lgbm_seeds[0])
+    base_data_load_started = perf_counter()
     try:
         base_data = load_train_valid_frames(
             cfg,
@@ -122,6 +134,7 @@ def train() -> None:
                 "Benchmark alignment failed after one forced benchmark redownload. "
                 f"initial_error={first_exc}; retry_error={second_exc}"
             ) from second_exc
+    _record_phase("base_data_load", base_data_load_started)
     wf_report: WalkforwardReport | None = None
     blend_report: BlendTuneReport | None = None
     checkpoint_walkforward: dict[str, object] | None = None
@@ -139,6 +152,7 @@ def train() -> None:
     }
     recommended_iter: int | None = None
     if cfg.walkforward_enabled:
+        walkforward_started = perf_counter()
         wf_report = evaluate_walkforward(cfg, lgb_params, base_data, logger=logger, status=status)
         recommended_iter = int(wf_report.recommended_num_iteration)
         blend_windows = collect_blend_windows(cfg, lgb_params, base_data, wf_report, logger=logger, status=status)
@@ -178,6 +192,7 @@ def train() -> None:
             wf_report.sharpe,
             wf_report.hit_rate,
         )
+        _record_phase("walkforward_and_blend_tune", walkforward_started)
     del base_data
     gc.collect()
 
@@ -186,6 +201,7 @@ def train() -> None:
     checkpoint_path = checkpoint_dir / CHECKPOINT_FILENAME
     features_by_model_path = checkpoint_dir / FEATURES_BY_MODEL_FILENAME
 
+    checkpoint_prepare_started = perf_counter()
     members = _load_training_checkpoint(
         checkpoint_path,
         cfg,
@@ -210,7 +226,9 @@ def train() -> None:
         member_features_key_fn=_member_features_key,
     )
     write_features_mapping(features_by_model_path, features_by_model)
+    _record_phase("checkpoint_prepare", checkpoint_prepare_started)
 
+    seed_training_started = perf_counter()
     members, features_by_model = run_seed_training_loop(
         cfg=cfg,
         lgb_params=lgb_params,
@@ -238,6 +256,7 @@ def train() -> None:
         logger=logger,
         status=status,
     )
+    _record_phase("seed_training", seed_training_started)
 
     if len(members) != len(cfg.lgbm_seeds):
         raise RuntimeError(
@@ -246,6 +265,7 @@ def train() -> None:
 
     log_member_summary(members, features_by_model)
 
+    artifact_save_started = perf_counter()
     save_and_log_artifact(
         cfg,
         run,
@@ -259,5 +279,9 @@ def train() -> None:
         wf_report=wf_report,
         postprocess_config=checkpoint_postprocess,
     )
+    _record_phase("artifact_save", artifact_save_started)
+    total_elapsed = perf_counter() - total_start
+    summary = " ".join(f"{name}={seconds:.2f}s" for name, seconds in sorted(phase_seconds.items()))
+    logger.info("phase=train_timing_summary total_seconds=%.2f %s", total_elapsed, summary)
     status.clear()
     run.finish()

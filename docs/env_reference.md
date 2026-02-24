@@ -35,6 +35,8 @@ Canonical runtime parsers:
 | `WANDB_PROJECT` | `numerai-mlops` | Override training project. |
 | `WANDB_ENTITY` | unset | Override training entity. |
 | `LGBM_DEVICE` | `cpu` | LightGBM device (`cpu`/`gpu`, with safe fallback behavior). |
+| `TRAIN_PROFILE` | `full` | Optional training preset for Colab entrypoint; `balanced` applies conservative speed-focused defaults via `setdefault`, `full` leaves env unchanged. |
+| `RUN_LGBM_GPU_PROBE` | `false` | Run a tiny LightGBM CPU/GPU probe before training and auto-resolve `LGBM_DEVICE` to `gpu` on success, otherwise `cpu`. |
 | `LGBM_SEEDS` | `42,1337,2026` | Multi-model seed list for ensembling. |
 | `MAX_FEATURES_PER_MODEL` | `1200` | Per-seed feature cap (`<=0` disables sampling). |
 | `FEATURE_SAMPLING_STRATEGY` | `sharded_shuffle` | Feature selection strategy. |
