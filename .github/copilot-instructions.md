@@ -17,7 +17,7 @@
 - For simple read/print/transform paths, straightforward fail-fast behavior is often enough.
 - Spend extra defensive effort on high-risk boundaries (artifact contract, train/infer interface, NumerAPI/W&B, drift gates).
 - Keep readability and code size in mind as practical tradeoffs, not hard constraints.
-- Always remember to update relevant docs if needed after changes.
+- Always remember to update relevant docs (including .env.colab.example) if needed after changes.
 
 ## Fast Validation
 - Run with `PYTHONPATH=src` from repo root.
