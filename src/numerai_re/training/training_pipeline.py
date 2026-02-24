@@ -50,13 +50,30 @@ ARTIFACT_SCHEMA_VERSION = 4
 def train() -> None:
     total_start = perf_counter()
     phase_seconds: dict[str, float] = {}
+    completed_phases = 0
+    total_phases = 6
 
     def _record_phase(phase_name: str, started_at: float) -> None:
+        nonlocal completed_phases
         elapsed = perf_counter() - started_at
         phase_seconds[phase_name] = phase_seconds.get(phase_name, 0.0) + elapsed
         logger.info("phase=train_timing phase_name=%s elapsed_seconds=%.2f", phase_name, elapsed)
+        completed_phases += 1
+        elapsed_total = perf_counter() - total_start
+        projected_total = (elapsed_total / completed_phases) * total_phases
+        eta_seconds = max(0.0, projected_total - elapsed_total)
+        logger.info(
+            "phase=train_eta_progress stage=%s completed=%d total=%d elapsed_seconds=%.2f projected_total_seconds=%.2f eta_seconds=%.2f",
+            phase_name,
+            completed_phases,
+            total_phases,
+            elapsed_total,
+            projected_total,
+            eta_seconds,
+        )
 
     cfg = TrainRuntimeConfig.from_env()
+    total_phases = 6 if cfg.walkforward_enabled else 5
     logger.info(
         "phase=config_loaded dataset_version=%s feature_set=%s model_name=%s lgbm_device=%s seeds=%s",
         cfg.dataset_version,

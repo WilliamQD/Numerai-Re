@@ -37,6 +37,7 @@ Canonical runtime parsers:
 | `LGBM_DEVICE` | `cpu` | LightGBM device (`cpu`/`gpu`, with safe fallback behavior). |
 | `TRAIN_PROFILE` | `full` | Optional training preset for Colab entrypoint; `balanced` applies conservative speed-focused defaults via `setdefault`, `full` leaves env unchanged. |
 | `RUN_LGBM_GPU_PROBE` | `false` | Run a tiny LightGBM CPU/GPU probe before training and auto-resolve `LGBM_DEVICE` to `gpu` on success, otherwise `cpu`. |
+| `LGBM_GPU_PROBE_MIN_SPEEDUP` | `1.15` | Minimum GPU-vs-CPU probe speedup required to keep `LGBM_DEVICE=gpu`; otherwise runtime uses CPU for the run. |
 | `LGBM_SEEDS` | `42,1337,2026` | Multi-model seed list for ensembling. |
 | `MAX_FEATURES_PER_MODEL` | `1200` | Per-seed feature cap (`<=0` disables sampling). |
 | `FEATURE_SAMPLING_STRATEGY` | `sharded_shuffle` | Feature selection strategy. |

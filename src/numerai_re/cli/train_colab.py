@@ -29,6 +29,8 @@ BALANCED_PROFILE_DEFAULTS: Final[dict[str, str]] = {
 
 EFFECTIVE_KNOBS: Final[tuple[str, ...]] = (
     "TRAIN_PROFILE",
+    "RUN_LGBM_GPU_PROBE",
+    "LGBM_GPU_PROBE_MIN_SPEEDUP",
     "NUMERAI_FEATURE_SET",
     "LOAD_MODE",
     "WALKFORWARD_MAX_WINDOWS",
@@ -100,6 +102,7 @@ def _probe_lgbm_gpu_if_requested() -> None:
         )
         return time.perf_counter() - start
 
+    min_speedup = float(os.getenv("LGBM_GPU_PROBE_MIN_SPEEDUP", "1.15").strip() or "1.15")
     cpu_elapsed = _run_probe("cpu")
     logger.info("phase=lgbm_probe_cpu_ok elapsed_seconds=%.2f", cpu_elapsed)
     try:
@@ -108,13 +111,23 @@ def _probe_lgbm_gpu_if_requested() -> None:
         os.environ["LGBM_DEVICE"] = "cpu"
         logger.warning("phase=lgbm_probe_gpu_failed reason=%s resolved_device=cpu", exc)
         return
-    os.environ["LGBM_DEVICE"] = "gpu"
     speedup = cpu_elapsed / gpu_elapsed if gpu_elapsed > 0 else float("inf")
-    logger.info(
-        "phase=lgbm_probe_gpu_ok elapsed_seconds=%.2f speedup_vs_cpu=%.2f resolved_device=gpu",
-        gpu_elapsed,
-        speedup,
-    )
+    if speedup >= min_speedup:
+        os.environ["LGBM_DEVICE"] = "gpu"
+        logger.info(
+            "phase=lgbm_probe_gpu_ok elapsed_seconds=%.2f speedup_vs_cpu=%.2f min_speedup=%.2f resolved_device=gpu",
+            gpu_elapsed,
+            speedup,
+            min_speedup,
+        )
+    else:
+        os.environ["LGBM_DEVICE"] = "cpu"
+        logger.info(
+            "phase=lgbm_probe_gpu_slow elapsed_seconds=%.2f speedup_vs_cpu=%.2f min_speedup=%.2f resolved_device=cpu",
+            gpu_elapsed,
+            speedup,
+            min_speedup,
+        )
 
 
 def _log_effective_knobs() -> None:

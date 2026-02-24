@@ -66,14 +66,18 @@ def apply_postprocess(
     cfg: PostprocessConfig,
     bench: np.ndarray | None = None,
     features: np.ndarray | None = None,
+    bench_gauss: np.ndarray | None = None,
 ) -> np.ndarray:
     pred_gauss = _gauss_rank_by_era(pred_raw, era)
     blended = pred_gauss
 
     if bench is not None and bench.size:
-        bench_gauss = np.empty_like(bench, dtype=np.float32)
-        for idx in range(bench.shape[1]):
-            bench_gauss[:, idx] = _gauss_rank_by_era(bench[:, idx], era)
+        if bench_gauss is None:
+            bench_gauss = np.empty_like(bench, dtype=np.float32)
+            for idx in range(bench.shape[1]):
+                bench_gauss[:, idx] = _gauss_rank_by_era(bench[:, idx], era)
+        elif bench_gauss.shape != bench.shape:
+            raise ValueError("bench_gauss must have same shape as bench.")
         resid = neutralize_to_matrix(pred_gauss, bench_gauss, proportion=cfg.bench_neutralize_prop)
         blended = (cfg.blend_alpha * pred_gauss) + ((1.0 - cfg.blend_alpha) * resid)
 

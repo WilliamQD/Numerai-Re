@@ -71,14 +71,19 @@ def bmc_mean_per_era(
     era: np.ndarray,
     bench: np.ndarray,
     neutralize_prop: float = 1.0,
+    *,
+    bench_gauss: np.ndarray | None = None,
 ) -> float:
     if bench.ndim != 2 or bench.shape[0] != pred.shape[0]:
         raise ValueError("bench must be a 2D matrix aligned to pred rows.")
 
     pred_gauss = gauss_rank_by_era(pred, era)
-    bench_gauss = np.empty_like(bench, dtype=np.float32)
-    for idx in range(bench.shape[1]):
-        bench_gauss[:, idx] = gauss_rank_by_era(bench[:, idx], era)
+    if bench_gauss is None:
+        bench_gauss = np.empty_like(bench, dtype=np.float32)
+        for idx in range(bench.shape[1]):
+            bench_gauss[:, idx] = gauss_rank_by_era(bench[:, idx], era)
+    elif bench_gauss.shape != bench.shape:
+        raise ValueError("bench_gauss must have the same shape as bench.")
 
     pred_resid = neutralize_to_matrix(pred_gauss, bench_gauss, proportion=neutralize_prop)
     vals: list[float] = []
