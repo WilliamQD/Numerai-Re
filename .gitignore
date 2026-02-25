@@ -8,3 +8,7 @@ __pycache__/
 artifacts/
 live.parquet
 submission.csv
+
+.venv/
+env/
+venv/
