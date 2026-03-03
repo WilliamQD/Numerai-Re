@@ -18,10 +18,11 @@
 - Spend extra defensive effort on high-risk boundaries (artifact contract, train/infer interface, NumerAPI/W&B, drift gates).
 - Keep readability and code size in mind as practical tradeoffs, not hard constraints.
 - Always remember to update relevant docs (including .env.colab.example) if needed after changes.
+- For code changes, ensure repository CI workflows pass (`lint-compile` and `dry-run-pipeline`) or update workflows in the same change set when checks drift legitimately.
 
 ## Fast Validation
 - Run with `PYTHONPATH=src` from repo root.
 - Useful smoke checks:
-  - `PYTHONPATH=src python -m tools.validate_pipeline --dry-run`
+  - `PYTHONPATH=src python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod`
   - `PYTHONPATH=src TRAIN_DRY_RUN=true python -m numerai_re.cli.train_colab`
   - `PYTHONPATH=src INFER_DRY_RUN=true python -m numerai_re.cli.inference`

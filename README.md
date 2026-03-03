@@ -111,6 +111,14 @@ PYTHONPATH=src TRAIN_DRY_RUN=true python -m numerai_re.cli.train_colab
 PYTHONPATH=src INFER_DRY_RUN=true python -m numerai_re.cli.inference
 ```
 
+## CI Policy
+
+- Pull requests and pushes to `main` run `.github/workflows/ci.yml` with two required jobs:
+  - `lint-compile` (`compileall` + `ruff check src`)
+  - `dry-run-pipeline` (`TRAIN_DRY_RUN`, `validate_pipeline`, `INFER_DRY_RUN`)
+- Code changes should merge only after CI is green. If CI fails due to legitimate workflow drift, update workflow definitions in the same change set.
+- Configure GitHub branch protection to require these CI checks before merge.
+
 ## Live Ops Cadence
 
 - Inference submissions: run every round window (automation handles this via submit workflow schedule).

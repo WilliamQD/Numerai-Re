@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-train.txt
+            requirements-infer.txt
+
+      - name: Install lint tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff==0.9.10
+
+      - name: Compile checks
+        run: python -m compileall -q src tests tools
+
+      - name: Ruff lint
+        run: ruff check src
+
+  dry-run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-train.txt
+            requirements-infer.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-train.txt
+          pip install -r requirements-infer.txt
+
+      - name: Training dry-run
+        env:
+          PYTHONPATH: src
+          TRAIN_DRY_RUN: "true"
+        run: python -m numerai_re.cli.train_colab
+
+      - name: Validate pipeline
+        env:
+          PYTHONPATH: src
+        run: python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod
+
+      - name: Inference dry-run
+        env:
+          PYTHONPATH: src
+          INFER_DRY_RUN: "true"
+        run: python -m numerai_re.cli.inference

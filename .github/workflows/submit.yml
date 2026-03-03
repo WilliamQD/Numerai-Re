@@ -21,6 +21,10 @@ permissions:
   contents: read
   issues: write
 
+concurrency:
+  group: numerai-submit
+  cancel-in-progress: false
+
 jobs:
   submit:
     runs-on: ubuntu-latest
