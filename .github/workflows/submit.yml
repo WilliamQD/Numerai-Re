@@ -1,9 +1,21 @@
-name: NumerAI Weekly Submission
+name: NumerAI Round Submission
 
 on:
   schedule:
-    - cron: "0 19 * * 6"
+    # Tue-Fri rounds can have short submission windows; run multiple attempts inside 13:00-14:00 UTC.
+    - cron: "5,20,35,50 13 * * 2-5"
+    # Saturday round typically stays open longer; run early and an additional pass.
+    - cron: "5 13,17 * * 6"
   workflow_dispatch:
+    inputs:
+      submission_mode:
+        description: "Submission mode: live uploads to Numerai, dry_run only validates inference path"
+        required: false
+        default: live
+        type: choice
+        options:
+          - live
+          - dry_run
 
 permissions:
   contents: read
@@ -16,6 +28,7 @@ jobs:
     env:
       NUMERAI_DATASET_VERSION: v5.2
       WANDB_MODEL_NAME: lgbm_numerai_v52
+      USE_INT8_PARQUET: "false"
       MAX_ABS_EXPOSURE: "0.30"
       MIN_PRED_STD: "1e-6"
 
@@ -37,6 +50,7 @@ jobs:
 
       - name: Run inference and submit
         id: infer
+        continue-on-error: true
         env:
           NUMERAI_PUBLIC_ID: ${{ secrets.NUMERAI_PUBLIC_ID }}
           NUMERAI_SECRET_KEY: ${{ secrets.NUMERAI_SECRET_KEY }}
@@ -45,23 +59,93 @@ jobs:
           WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
           WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
           PYTHONPATH: src
-        run: python -m numerai_re.cli.inference
+        run: |
+          set -o pipefail
+          submission_mode="live"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.submission_mode }}" ]; then
+            submission_mode="${{ github.event.inputs.submission_mode }}"
+          fi
 
-      - name: Open issue when drift guard aborts
-        if: steps.infer.outcome == 'failure'
+          if [ "$submission_mode" = "dry_run" ]; then
+            echo "Running inference in dry-run mode (no Numerai upload)."
+            INFER_DRY_RUN=true python -m numerai_re.cli.inference 2>&1 | tee infer.log
+          else
+            python -m numerai_re.cli.inference 2>&1 | tee infer.log
+          fi
+
+          exit_code=${PIPESTATUS[0]}
+
+          fail_reason="none"
+          submission_id=""
+          model_id=""
+          if grep -q "submission_id=" infer.log; then
+            submission_id=$(grep -oE 'submission_id=[^[:space:]]+' infer.log | tail -n1 | cut -d= -f2-)
+          fi
+          if grep -q "model_id=" infer.log; then
+            model_id=$(grep -oE 'model_id=[^[:space:]]+' infer.log | tail -n1 | cut -d= -f2-)
+          fi
+
+          if [ "$exit_code" -ne 0 ]; then
+            if grep -qi "Missing required environment variable" infer.log; then
+              fail_reason="missing_env"
+            elif grep -qi "Configured NUMERAI_MODEL_NAME.*not found among Numerai models" infer.log; then
+              fail_reason="invalid_model_name"
+            elif grep -qi "DRIFT_GUARD_ABORT" infer.log; then
+              fail_reason="drift_guard"
+            elif grep -Eqi "wandb|artifact|404|not found" infer.log; then
+              fail_reason="artifact_or_wandb"
+            elif grep -Eqi "NumerAPI|upload|HTTP|API" infer.log; then
+              fail_reason="numerai_api"
+            else
+              fail_reason="runtime_error"
+            fi
+          fi
+
+          echo "submission_mode=$submission_mode" >> "$GITHUB_OUTPUT"
+          echo "submission_id=$submission_id" >> "$GITHUB_OUTPUT"
+          echo "model_id=$model_id" >> "$GITHUB_OUTPUT"
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          echo "fail_reason=$fail_reason" >> "$GITHUB_OUTPUT"
+          exit "$exit_code"
+
+      - name: Upload inference log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infer-log-${{ github.run_id }}
+          path: infer.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Open issue when submission fails
+        if: steps.infer.outputs.exit_code != '0'
         uses: actions/github-script@v7
+        env:
+          FAIL_REASON: ${{ steps.infer.outputs.fail_reason }}
+          EXIT_CODE: ${{ steps.infer.outputs.exit_code }}
+          NUMERAI_DATASET_VERSION: ${{ env.NUMERAI_DATASET_VERSION }}
+          WANDB_MODEL_NAME: ${{ env.WANDB_MODEL_NAME }}
+          NUMERAI_MODEL_NAME: ${{ secrets.NUMERAI_MODEL_NAME }}
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const title = "🚨 NumerAI pipeline failed (drift guard or runtime error)";
+            const title = "🚨 NumerAI submission workflow failed";
+            const failReason = process.env.FAIL_REASON || "unknown";
+            const exitCode = process.env.EXIT_CODE || "unknown";
+            const trigger = context.eventName;
+            const datasetVersion = process.env.NUMERAI_DATASET_VERSION || "unknown";
+            const wandbModelName = process.env.WANDB_MODEL_NAME || "unknown";
+            const numeraiModelName = process.env.NUMERAI_MODEL_NAME || "unknown";
+
             const body = [
-              "The scheduled NumerAI submission workflow failed and aborted submission.",
+              "The NumerAI submission workflow failed and no submission was accepted for this run.",
               "",
-              "Possible causes:",
-              "- Live schema drift / missing feature columns",
-              "- Prediction quality gate failure (NaN/Inf/all-zero/low-variance)",
-              "- Feature exposure breach",
-              "- Auth/API issues",
+              `- Trigger: ${trigger}`,
+              `- Failure class: ${failReason}`,
+              `- Exit code: ${exitCode}`,
+              `- Dataset version: ${datasetVersion}`,
+              `- W&B model registry name: ${wandbModelName}`,
+              `- NumerAI model name: ${numeraiModelName}`,
               "",
               `Run logs: ${runUrl}`
             ].join("\n");
@@ -73,3 +157,24 @@ jobs:
               body,
               labels: ["automated-alert", "numerai"]
             });
+
+      - name: Mark run as failed
+        if: steps.infer.outputs.exit_code != '0'
+        run: |
+          echo "Inference/submission failed with reason=${{ steps.infer.outputs.fail_reason }}"
+          exit 1
+
+      - name: Publish workflow summary
+        if: always()
+        run: |
+          {
+            echo "## NumerAI submission run"
+            echo ""
+            echo "- Trigger: ${{ github.event_name }}"
+            echo "- Mode: ${{ steps.infer.outputs.submission_mode || 'live' }}"
+            echo "- Exit code: ${{ steps.infer.outputs.exit_code || 'unknown' }}"
+            echo "- Failure class: ${{ steps.infer.outputs.fail_reason || 'none' }}"
+            echo "- Submission ID: ${{ steps.infer.outputs.submission_id || 'n/a' }}"
+            echo "- Model ID: ${{ steps.infer.outputs.model_id || 'n/a' }}"
+            echo "- Inference log artifact: infer-log-${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -13,10 +13,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from numerai_re.contracts.artifact_contract import (  # noqa: E402
-    FEATURES_UNION_FILENAME,
     MANIFEST_FILENAME,
     POSTPROCESS_FILENAME,
     REQUIRED_POSTPROCESS_KEYS,
+    load_features_by_model,
     load_manifest,
     load_union_features,
     resolve_model_files,
@@ -24,7 +24,7 @@ from numerai_re.contracts.artifact_contract import (  # noqa: E402
 )
 
 
-REQUIRED_ARTIFACT_FILES = (FEATURES_UNION_FILENAME, MANIFEST_FILENAME, POSTPROCESS_FILENAME)
+REQUIRED_ARTIFACT_FILES = (MANIFEST_FILENAME, POSTPROCESS_FILENAME)
 
 
 def _safe_print(prefix: str, message: str) -> None:
@@ -61,6 +61,7 @@ def _validate_artifact_contract(artifact_dir: Path, expected_dataset_version: st
         model_files = resolve_model_files(manifest, label="pipeline validation")
         validate_model_files_exist(artifact_dir, model_files, label="pipeline validation")
         load_union_features(artifact_dir, manifest, label="pipeline validation")
+        load_features_by_model(artifact_dir, manifest, model_files, label="pipeline validation")
     except RuntimeError as exc:
         _fail(str(exc), failures)
         return

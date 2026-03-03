@@ -15,6 +15,19 @@ This repository runs a **remote-train / auto-submit** system:
 ### Run inference in GitHub Actions
 1. Configure required repo secrets: `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_API_KEY`, `WANDB_ENTITY`, `WANDB_PROJECT`.
 2. Trigger `.github/workflows/submit.yml` manually or wait for schedule.
+  - Scheduled cadence is aligned to Numerai round windows (Tue-Fri multiple runs in 13:00-14:00 UTC, Saturday early + follow-up pass).
+  - Policy is single attempt per workflow run; failures create a GitHub issue alert.
+  - Manual dispatch supports `submission_mode=dry_run` for safe workflow testing (no Numerai upload) and `submission_mode=live` for real submissions.
+  - Each run uploads `infer.log` as a workflow artifact and writes submission metadata to the job summary.
+
+### Run inference locally (first-time friendly)
+1. Follow the manual runbook in `inference_local_workflow.md`.
+2. Optional quick path from repo root (PowerShell):
+  - `.\.venv\Scripts\Activate.ps1`
+  - `$env:PYTHONPATH="src"`
+  - `python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod`
+  - `python -m numerai_re.cli.promote_model`
+  - `cmd /c "python -m numerai_re.cli.inference 2>&1" | Tee-Object -FilePath infer_live.log`
 
 ## Repository Structure
 
@@ -93,7 +106,14 @@ Run from repository root:
 ```bash
 PYTHONPATH=src python -m py_compile src/numerai_re/cli/train_colab.py src/numerai_re/cli/inference.py src/numerai_re/runtime/config.py src/numerai_re/cli/promote_model.py
 ruff check src
-PYTHONPATH=src python -m tools.validate_pipeline --dry-run
+PYTHONPATH=src python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod
 PYTHONPATH=src TRAIN_DRY_RUN=true python -m numerai_re.cli.train_colab
 PYTHONPATH=src INFER_DRY_RUN=true python -m numerai_re.cli.inference
 ```
+
+## Live Ops Cadence
+
+- Inference submissions: run every round window (automation handles this via submit workflow schedule).
+- Retraining: run weekly, then promote only validated candidates to `prod`.
+- Score timing: live diagnostics usually appear after several days; fully settled round scoring can take about a month.
+- Practical implication: do not pause submissions while waiting for first score updates.

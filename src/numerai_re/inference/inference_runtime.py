@@ -125,14 +125,58 @@ def _resolve_live_id(live_df: pd.DataFrame) -> np.ndarray:
 def _align_live_benchmarks(live_bench_path: Path, live_id: np.ndarray, bench_cols_used: list[str]) -> np.ndarray:
     if not bench_cols_used:
         raise DriftGuardError("postprocess_config.json has empty bench_cols_used.")
-    bench_df = pd.read_parquet(live_bench_path, columns=["id", *bench_cols_used]).set_index("id")
+
+    try:
+        bench_df = pd.read_parquet(live_bench_path, columns=["id", *bench_cols_used]).set_index("id")
+    except (KeyError, ValueError) as exc:
+        logger.warning(
+            "phase=benchmark_parquet_column_fallback requested_cols=%s reason=%s",
+            ["id", *bench_cols_used],
+            exc,
+        )
+        bench_df = pd.read_parquet(live_bench_path)
+        if "id" in bench_df.columns:
+            bench_df = bench_df.set_index("id")
+        elif bench_df.index.name != "id":
+            bench_df = bench_df.reset_index()
+            if "id" in bench_df.columns:
+                bench_df = bench_df.set_index("id")
+            else:
+                raise DriftGuardError("Benchmark parquet is missing required 'id' (expected as column or index).")
+
+    missing_bench_cols = [col for col in bench_cols_used if col not in bench_df.columns]
+    if missing_bench_cols:
+        raise DriftGuardError(f"Benchmark parquet is missing required benchmark columns: {missing_bench_cols}")
+
     try:
         bench_aligned_df = bench_df.loc[live_id, bench_cols_used]
     except KeyError as exc:
         raise DriftGuardError("Benchmark parquet is missing ids required by live.parquet.") from exc
     if bench_aligned_df.isna().any().any():
         raise DriftGuardError("Benchmark alignment produced NaNs.")
-    bench_aligned = bench_aligned_df.to_numpy(dtype=np.float32, copy=False)
+
+    numeric_columns: list[str] = []
+    dropped_non_numeric: list[str] = []
+    for col in bench_aligned_df.columns:
+        coerced = pd.to_numeric(bench_aligned_df[col], errors="coerce")
+        if coerced.isna().any():
+            dropped_non_numeric.append(str(col))
+        else:
+            bench_aligned_df[col] = coerced
+            numeric_columns.append(str(col))
+
+    if dropped_non_numeric:
+        logger.warning(
+            "phase=benchmark_non_numeric_columns_dropped dropped_cols=%s",
+            dropped_non_numeric,
+        )
+    if not numeric_columns:
+        raise DriftGuardError(
+            "Benchmark alignment produced no numeric benchmark columns after filtering. "
+            f"Configured columns: {bench_cols_used}."
+        )
+
+    bench_aligned = bench_aligned_df[numeric_columns].to_numpy(dtype=np.float32, copy=False)
     logger.info("phase=benchmarks_loaded n_bench_cols=%d", bench_aligned.shape[1])
     return bench_aligned
 

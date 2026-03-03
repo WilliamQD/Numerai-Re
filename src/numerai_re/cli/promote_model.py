@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -9,8 +10,11 @@ from pathlib import Path
 import wandb
 
 from numerai_re.contracts.artifact_contract import (
-    FEATURES_FILENAME,
+    POSTPROCESS_FILENAME,
+    REQUIRED_POSTPROCESS_KEYS,
+    load_features_by_model,
     load_manifest,
+    load_union_features,
     resolve_model_files,
     validate_model_files_exist,
 )
@@ -39,9 +43,6 @@ def main() -> int:
     artifact = api.artifact(ref, type="model")
     root = Path(artifact.download(root="artifacts_promote"))
 
-    features_path = root / FEATURES_FILENAME
-    if not features_path.exists():
-        raise RuntimeError(f"Candidate artifact is missing required file '{FEATURES_FILENAME}'.")
     manifest = load_manifest(root, label=ref)
 
     manifest_dataset_version = manifest.get("dataset_version")
@@ -53,6 +54,20 @@ def main() -> int:
 
     filenames = resolve_model_files(manifest, label=ref)
     validate_model_files_exist(root, filenames, label=ref)
+    load_union_features(root, manifest, label=ref)
+    load_features_by_model(root, manifest, filenames, label=ref)
+
+    postprocess_path = root / POSTPROCESS_FILENAME
+    if not postprocess_path.exists():
+        raise RuntimeError(f"Candidate artifact is missing required file '{POSTPROCESS_FILENAME}'.")
+    postprocess_payload = json.loads(postprocess_path.read_text())
+    if not isinstance(postprocess_payload, dict):
+        raise RuntimeError(f"Invalid '{POSTPROCESS_FILENAME}' for {ref}: expected JSON object.")
+    missing_postprocess_keys = sorted(REQUIRED_POSTPROCESS_KEYS - set(postprocess_payload.keys()))
+    if missing_postprocess_keys:
+        raise RuntimeError(
+            f"Invalid '{POSTPROCESS_FILENAME}' for {ref}: missing required keys {missing_postprocess_keys}."
+        )
 
     run = wandb.init(project=project, entity=entity, job_type="promote")
     run.log_artifact(artifact, aliases=[prod_alias])

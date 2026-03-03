@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,9 @@ REQUIRED_POSTPROCESS_KEYS = {
     "payout_weight_bmc",
     "bench_cols_used",
 }
+
+
+logger = logging.getLogger(__name__)
 
 
 def _read_json(path: Path, *, label: str) -> Any:
@@ -55,7 +59,25 @@ def resolve_model_files(manifest: dict[str, Any], *, label: str) -> list[str]:
 def load_union_features(root: Path, manifest: dict[str, Any], *, label: str) -> list[str]:
     union_file = manifest.get("features_union_file")
     if not isinstance(union_file, str) or not union_file.strip():
-        raise RuntimeError(f"Invalid manifest for {label}: missing non-empty 'features_union_file'.")
+        legacy_union_path = root / FEATURES_UNION_FILENAME
+        legacy_features_path = root / FEATURES_FILENAME
+        if legacy_union_path.exists():
+            union_file = FEATURES_UNION_FILENAME
+            logger.warning(
+                "phase=artifact_contract_legacy_manifest label=%s fallback_file=%s",
+                label,
+                union_file,
+            )
+        elif legacy_features_path.exists():
+            union_file = FEATURES_FILENAME
+            logger.warning(
+                "phase=artifact_contract_legacy_manifest label=%s fallback_file=%s",
+                label,
+                union_file,
+            )
+        else:
+            raise RuntimeError(f"Invalid manifest for {label}: missing non-empty 'features_union_file'.")
+
     payload = _read_json(root / union_file, label=label)
     if not isinstance(payload, list) or not payload or not all(isinstance(col, str) and col for col in payload):
         raise RuntimeError(f"Invalid '{union_file}' for {label}: expected non-empty list[str].")
@@ -71,7 +93,13 @@ def load_features_by_model(
 ) -> dict[str, list[str]]:
     by_model_file = manifest.get("features_by_model_file")
     if not isinstance(by_model_file, str) or not by_model_file.strip():
-        raise RuntimeError(f"Invalid manifest for {label}: missing non-empty 'features_by_model_file'.")
+        union_features = load_union_features(root, manifest, label=label)
+        logger.warning(
+            "phase=artifact_contract_legacy_manifest label=%s fallback=uniform_features_by_model n_models=%d",
+            label,
+            len(model_files),
+        )
+        return {model_filename: union_features for model_filename in model_files}
 
     file_path = root / by_model_file
     if not file_path.exists():
@@ -88,6 +116,12 @@ def load_features_by_model(
 
     if not normalized:
         raise RuntimeError(f"Invalid '{by_model_file}' for {label}: no valid model->feature mapping entries.")
+
+    missing_models = [model_filename for model_filename in model_files if model_filename not in normalized]
+    if missing_models:
+        raise RuntimeError(
+            f"Invalid '{by_model_file}' for {label}: missing feature mapping for model files {missing_models}."
+        )
     return normalized
 
 

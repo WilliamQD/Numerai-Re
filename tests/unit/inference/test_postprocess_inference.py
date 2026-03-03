@@ -20,6 +20,7 @@ from numerai_re.cli.inference import (
     apply_quality_gates,
 )
 from numerai_re.inference.postprocess import PostprocessConfig, apply_postprocess
+from numerai_re.inference.inference_runtime import _align_live_benchmarks
 
 
 class _FakeNumerAPI:
@@ -105,6 +106,71 @@ class PostprocessInferenceTests(unittest.TestCase):
         resolved = _download_live_dataset(napi, "v5.2", out_path, use_int8_parquet=True)
         self.assertEqual(resolved, out_path)
         self.assertEqual(napi.downloaded, ("v5.2/live_int8.parquet", str(out_path)))
+
+    def test_align_live_benchmarks_accepts_id_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "live_benchmark_models.parquet"
+            pd.DataFrame(
+                {
+                    "id": ["id_1", "id_2"],
+                    "benchmark_1": [0.1, 0.2],
+                    "benchmark_2": [0.3, 0.4],
+                }
+            ).to_parquet(path, index=False)
+
+            aligned = _align_live_benchmarks(path, np.array(["id_2", "id_1"]), ["benchmark_1", "benchmark_2"])
+
+        self.assertEqual(aligned.shape, (2, 2))
+        self.assertAlmostEqual(float(aligned[0, 0]), 0.2, places=6)
+        self.assertAlmostEqual(float(aligned[1, 1]), 0.3, places=6)
+
+    def test_align_live_benchmarks_accepts_id_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "live_benchmark_models.parquet"
+            df = pd.DataFrame(
+                {
+                    "benchmark_1": [0.1, 0.2],
+                    "benchmark_2": [0.3, 0.4],
+                },
+                index=pd.Index(["id_1", "id_2"], name="id"),
+            )
+            df.to_parquet(path)
+
+            aligned = _align_live_benchmarks(path, np.array(["id_2", "id_1"]), ["benchmark_1", "benchmark_2"])
+
+        self.assertEqual(aligned.shape, (2, 2))
+        self.assertAlmostEqual(float(aligned[0, 0]), 0.2, places=6)
+        self.assertAlmostEqual(float(aligned[1, 1]), 0.3, places=6)
+
+    def test_align_live_benchmarks_drops_non_numeric_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "live_benchmark_models.parquet"
+            pd.DataFrame(
+                {
+                    "id": ["id_1", "id_2"],
+                    "era": ["X", "Y"],
+                    "benchmark_1": [0.1, 0.2],
+                }
+            ).to_parquet(path, index=False)
+
+            aligned = _align_live_benchmarks(path, np.array(["id_2", "id_1"]), ["era", "benchmark_1"])
+
+        self.assertEqual(aligned.shape, (2, 1))
+        self.assertAlmostEqual(float(aligned[0, 0]), 0.2, places=6)
+        self.assertAlmostEqual(float(aligned[1, 0]), 0.1, places=6)
+
+    def test_align_live_benchmarks_raises_when_all_non_numeric(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "live_benchmark_models.parquet"
+            pd.DataFrame(
+                {
+                    "id": ["id_1", "id_2"],
+                    "era": ["X", "Y"],
+                }
+            ).to_parquet(path, index=False)
+
+            with self.assertRaises(DriftGuardError):
+                _align_live_benchmarks(path, np.array(["id_2", "id_1"]), ["era"])
 
 
 if __name__ == "__main__":

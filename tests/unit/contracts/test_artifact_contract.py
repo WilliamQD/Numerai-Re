@@ -61,6 +61,45 @@ class ArtifactContractTests(unittest.TestCase):
             features = load_union_features(root, manifest, label="test")
         self.assertEqual(features, ["feature_1"])
 
+    def test_load_union_features_legacy_fallback_to_features_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "dataset_version": "v5.2",
+                "feature_set": "medium",
+                "artifact_schema_version": 2,
+                "model_files": ["m1.txt"],
+            }
+            (root / "features.json").write_text(json.dumps(["feature_1", "feature_2"]))
+            features = load_union_features(root, manifest, label="legacy")
+        self.assertEqual(features, ["feature_1", "feature_2"])
+
+    def test_load_features_by_model_legacy_fallback_uses_union_for_all_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = {
+                "dataset_version": "v5.2",
+                "feature_set": "medium",
+                "artifact_schema_version": 2,
+                "model_files": ["m1.txt", "m2.txt"],
+            }
+            (root / "features.json").write_text(json.dumps(["feature_1", "feature_2"]))
+            mapping = load_features_by_model(root, manifest, ["m1.txt", "m2.txt"], label="legacy")
+        self.assertEqual(mapping["m1.txt"], ["feature_1", "feature_2"])
+        self.assertEqual(mapping["m2.txt"], ["feature_1", "feature_2"])
+
+    def test_load_features_by_model_requires_mapping_for_all_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "features_by_model.json").write_text(json.dumps({"m1.txt": ["feature_1"]}))
+            manifest = {
+                "features_union_file": "features_union.json",
+                "features_by_model_file": "features_by_model.json",
+            }
+            (root / "features_union.json").write_text(json.dumps(["feature_1"]))
+            with self.assertRaises(RuntimeError):
+                load_features_by_model(root, manifest, ["m1.txt", "m2.txt"], label="test")
+
     def test_validate_model_files_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -19,7 +19,7 @@ Canonical runtime parsers:
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `WANDB_MODEL_NAME` | `lgbm_numerai_v52` | W&B model registry name used by train/inference. |
-| `USE_INT8_PARQUET` | `true` | Prefer int8 feature loading; runtime infers feature-column integer schema from parquet content instead of filename suffix. |
+| `USE_INT8_PARQUET` | training: `true`, inference CLI: `false` | Prefer int8 feature loading; train runtime defaults to `true` while inference entrypoint defaults to `false` unless explicitly set. |
 | `STATUS_UPDATE_SECONDS` | `60` | Long-phase status refresh cadence (single-line if interactive, compact log fallback otherwise). |
 | `TRAIN_DRY_RUN` | `false` | Run synthetic training smoke path and print `TRAIN_DRY_RUN_OK`. |
 | `INFER_DRY_RUN` | `false` | Run inference smoke path and print `INFER_DRY_RUN_OK`. |
@@ -87,6 +87,36 @@ Canonical runtime parsers:
 | `EXPOSURE_SAMPLE_SEED` | `0` | Sampling seed for drift checks. |
 | `MIN_PRED_STD` | `1e-6` | Minimum prediction standard deviation gate. |
 | `MAX_ABS_EXPOSURE` | `0.30` | Maximum allowed absolute feature exposure. |
+
+## Local Inference Workflow (Windows PowerShell)
+
+Manual runbook is in `inference_local_workflow.md` at repo root.
+
+Quick manual flow from repo root:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH="src"
+
+$env:WANDB_API_KEY="YOUR_WANDB_API_KEY"
+$env:WANDB_ENTITY="YOUR_WANDB_ENTITY"
+$env:WANDB_PROJECT="numerai-mlops"
+$env:WANDB_MODEL_NAME="lgbm_numerai_v52"
+$env:NUMERAI_PUBLIC_ID="YOUR_NUMERAI_PUBLIC_ID"
+$env:NUMERAI_SECRET_KEY="YOUR_NUMERAI_SECRET_KEY"
+$env:NUMERAI_MODEL_NAME="YOUR_NUMERAI_MODEL_NAME"
+
+python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod
+
+$env:INFER_DRY_RUN="true"
+python -m numerai_re.cli.inference
+Remove-Item Env:INFER_DRY_RUN -ErrorAction SilentlyContinue
+
+python -m numerai_re.cli.promote_model
+
+cmd /c "python -m numerai_re.cli.inference 2>&1" | Tee-Object -FilePath infer_live.log
+Select-String -Path infer_live.log -Pattern "phase=artifact_downloaded|phase=frame_loaded|postprocess_loaded|DRIFT_GUARD_ABORT|Traceback|submit|upload|submission"
+```
 
 ## Colab Notebook Variables
 
