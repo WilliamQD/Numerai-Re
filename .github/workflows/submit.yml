@@ -33,7 +33,7 @@ jobs:
       NUMERAI_DATASET_VERSION: v5.2
       WANDB_MODEL_NAME: lgbm_numerai_v52
       USE_INT8_PARQUET: "false"
-      MAX_ABS_EXPOSURE: "0.30"
+      MAX_ABS_EXPOSURE: "0.35"
       MIN_PRED_STD: "1e-6"
 
     steps:
