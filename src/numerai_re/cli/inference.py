@@ -28,10 +28,7 @@ from numerai_re.contracts.artifact_contract import (
 )
 from numerai_re.runtime.config import InferenceRuntimeConfig, _optional_bool_env
 from numerai_re.inference.inference_runtime import (
-    RANK_01_EPSILON,
     DriftGuardError,
-    _download_live_benchmark_dataset,
-    _download_live_dataset,
     _model_feature_cols,
     apply_quality_gates,
     run_live_inference,

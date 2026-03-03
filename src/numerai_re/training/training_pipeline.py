@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gc
 import logging
-from pathlib import Path
 from time import perf_counter
 
 from numerai_re.common.status_reporter import RuntimeStatusReporter
