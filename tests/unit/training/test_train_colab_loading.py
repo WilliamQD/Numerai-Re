@@ -34,8 +34,8 @@ def _ensure_train_colab_import_deps() -> None:
 
 
 _ensure_train_colab_import_deps()
-from numerai_re.training import training_runtime as _training_runtime  # noqa: E402
-from numerai_re.training.training_runtime import _split_feature_dtype_name, load_train_valid_frames  # noqa: E402
+from numerai_re.training import runtime as _training_runtime  # noqa: E402
+from numerai_re.training.runtime import _split_feature_dtype_name, load_train_valid_frames  # noqa: E402
 
 
 class TrainColabLoadingTests(unittest.TestCase):
@@ -43,10 +43,10 @@ class TrainColabLoadingTests(unittest.TestCase):
         int8_dtype = "Int8"
         float_dtype = "Float32"
         with (
-            patch("numerai_re.training.training_runtime.pl.Int8", new=int8_dtype, create=True),
-            patch("numerai_re.training.training_runtime.pl.Float32", new=float_dtype, create=True),
+            patch("numerai_re.training.runtime.pl.Int8", new=int8_dtype, create=True),
+            patch("numerai_re.training.runtime.pl.Float32", new=float_dtype, create=True),
             patch(
-                "numerai_re.training.training_runtime.pl.read_parquet_schema",
+                "numerai_re.training.runtime.pl.read_parquet_schema",
                 return_value={"feature_0": int8_dtype, "target": float_dtype},
                 create=True,
             ),
@@ -58,9 +58,9 @@ class TrainColabLoadingTests(unittest.TestCase):
         int8_dtype = "Int8"
         float_dtype = "Float32"
         with (
-            patch("numerai_re.training.training_runtime.pl.Int8", new=int8_dtype, create=True),
+            patch("numerai_re.training.runtime.pl.Int8", new=int8_dtype, create=True),
             patch(
-                "numerai_re.training.training_runtime.pl.read_parquet_schema",
+                "numerai_re.training.runtime.pl.read_parquet_schema",
                 return_value={"feature_0": float_dtype, "target": float_dtype},
                 create=True,
             ),
@@ -93,14 +93,14 @@ class TrainColabLoadingTests(unittest.TestCase):
 
         with (
             patch(
-                "numerai_re.training.training_runtime.load_split_numpy",
+                "numerai_re.training.runtime.load_split_numpy",
                 side_effect=[
                     (x_train, y_train, era_train, id_train),
                     (x_valid, y_valid, era_valid, id_valid),
                 ],
             ),
             patch(
-                "numerai_re.training.training_runtime.load_and_align_benchmarks",
+                "numerai_re.training.runtime.load_and_align_benchmarks",
                 return_value=SimpleNamespace(
                     train=np.zeros((len(id_train), 1), dtype=np.float32),
                     train_mask=np.ones(len(id_train), dtype=bool),
@@ -147,14 +147,14 @@ class TrainColabLoadingTests(unittest.TestCase):
 
         with (
             patch(
-                "numerai_re.training.training_runtime.load_split_numpy",
+                "numerai_re.training.runtime.load_split_numpy",
                 side_effect=[
                     (x, y, era, row_id),
                     (x, y, era, row_id),
                 ],
             ) as load_split,
             patch(
-                "numerai_re.training.training_runtime.load_and_align_benchmarks",
+                "numerai_re.training.runtime.load_and_align_benchmarks",
                 return_value=SimpleNamespace(
                     train=np.zeros((1, 1), dtype=np.float32),
                     train_mask=np.ones(1, dtype=bool),

@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from numerai_re.contracts.artifact_contract import (
+from numerai_re.contracts import (
     MANIFEST_FILENAME,
     load_features_by_model,
     load_manifest,

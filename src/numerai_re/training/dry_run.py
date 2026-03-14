@@ -6,16 +6,16 @@ from pathlib import Path
 
 import numpy as np
 
-from numerai_re.contracts.artifact_contract import (
+from numerai_re.contracts import (
     FEATURES_BY_MODEL_FILENAME,
     FEATURES_FILENAME,
     FEATURES_UNION_FILENAME,
     MANIFEST_FILENAME,
     POSTPROCESS_FILENAME,
 )
-from numerai_re.runtime.config import TrainRuntimeConfig
-from numerai_re.common.era_utils import era_to_int
-from numerai_re.training.training_runtime import LoadedData, fit_lgbm, load_feature_list, resolve_lgb_params
+from numerai_re.config import TrainRuntimeConfig
+from numerai_re.shared import era_to_int
+from numerai_re.training.runtime import LoadedData, fit_lgbm, load_feature_list, resolve_lgb_params
 from numerai_re.training.walkforward import build_windows
 
 

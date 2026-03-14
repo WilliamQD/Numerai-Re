@@ -1,127 +1,199 @@
-# NumerAI Hybrid-Cloud MLOps
+# NumerAI Hybrid-Cloud MLOps Pipeline
 
-This repository runs a **remote-train / auto-submit** system:
-- Training runs in Colab and logs versioned model artifacts to W&B.
-- Inference runs in GitHub Actions, pulls the promoted artifact, applies quality gates, and submits to NumerAI.
-- Promotion is a manual workflow that validates candidate artifacts before moving them to `prod`.
+> End-to-end automated machine learning system for the [NumerAI](https://numer.ai/) hedge fund tournament: trains LightGBM ensemble models in Google Colab, versions artifacts through Weights & Biases, and submits live predictions via scheduled GitHub Actions — fully autonomous, zero manual intervention required after setup.
+
+---
+
+## Architecture Overview
+
+```
+Google Colab (GPU)                  GitHub Actions (scheduled)
+ ┌──────────────┐                    ┌────────────────────┐
+ │  Train CLI   │                    │   Inference CLI     │
+ │  (notebook)  │                    │   (cron: Tue-Sat)   │
+ └──────┬───────┘                    └────────┬───────────┘
+        │                                     │
+        ▼                                     ▼
+ ┌──────────────┐    promote     ┌────────────────────┐
+ │  W&B Model   │───(manual)──▶  │  W&B Model Registry │
+ │  Registry    │   validation   │  (prod alias)       │
+ │  (candidate) │                └────────┬───────────┘
+ └──────────────┘                         │
+                                          ▼
+                                 ┌────────────────────┐
+                                 │  NumerAI Tournament │
+                                 │  (live submission)  │
+                                 └────────────────────┘
+```
+
+**Training** runs on-demand in Colab with GPU acceleration — fits walk-forward-tuned LightGBM ensembles across multiple seeds, tunes blend/neutralization hyperparameters via grid search over walk-forward windows, and publishes versioned artifacts (model files + contract metadata) to W&B.
+
+**Inference** runs automatically on a cron schedule — downloads the promoted production artifact, loads live tournament data from NumerAI, runs ensemble predictions with postprocessing (Gauss-rank normalization, benchmark neutralization, alpha blending), applies quality gates (NaN/Inf checks, rank bounds, prediction std, feature exposure drift), and uploads validated submissions to NumerAI.
+
+**Promotion** is a manual gate — validates artifact integrity (manifest schema, model file existence, feature mappings, postprocess config) before aliasing a candidate to `prod`.
+
+---
+
+## Key Features
+
+| Feature | Description |
+|---|---|
+| **Walk-forward cross-validation** | Trains on rolling era windows with configurable chunk sizes and purge gaps to avoid lookahead bias |
+| **Multi-seed ensemble** | Trains N independent LightGBM models with sharded feature subsets for diversity, then blends predictions |
+| **Automated hyperparameter tuning** | Grid search over blend alpha and benchmark neutralization proportion using walk-forward windows with CORR + BMC objective |
+| **Checkpoint/resume** | Signature-based checkpointing at seed, walk-forward, and blend-tuning stages — recovers from Colab preemptions |
+| **Artifact contract system** | JSON-based contract (manifest, features, postprocess config) enforced by both training and inference pipelines |
+| **Quality gates** | Pre-submission validation: NaN/Inf detection, rank-bound verification, prediction std floor, max absolute feature exposure |
+| **Dry-run mode** | Full pipeline smoke testing with synthetic data — runs in CI on every PR |
+| **Automated alerting** | Failed submissions auto-create GitHub Issues with structured metadata for triage |
+| **Scheduled retry windows** | Multiple cron slots per round day with single-attempt-per-run policy |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **ML Framework** | LightGBM (gradient-boosted decision trees) |
+| **Data Processing** | Polars (training), Pandas + PyArrow (inference), NumPy |
+| **Statistical Methods** | SciPy (Gauss-rank transforms, OLS neutralization, tie-rank correlation) |
+| **Experiment Tracking** | Weights & Biases (run logging, model registry, artifact versioning) |
+| **Training Compute** | Google Colab (T4/A100 GPU, with CPU fallback + GPU probe) |
+| **CI/CD** | GitHub Actions (lint, dry-run, scheduled inference, manual promotion) |
+| **Tournament API** | NumerAPI (data download, prediction submission, model validation) |
+| **Code Quality** | Ruff (linting), `compileall` (syntax), contract validation tooling |
+| **Language** | Python 3.9+ with type annotations throughout |
+
+---
+
+## Repository Structure
+
+```
+src/numerai_re/
+  config.py              # Runtime config: ~80 env vars parsed into frozen dataclasses
+  contracts.py           # Artifact contract: manifest/features/postprocess schema validation
+  shared.py              # Shared utilities: era parsing, status reporting, feature sampling, NumerAI metrics
+  cli/
+    inference.py          # Inference entrypoint (GitHub Actions + local)
+    train_colab.py        # Training entrypoint (Colab notebook)
+    promote_model.py      # Model promotion entrypoint (manual workflow)
+  data/
+    loading.py            # Parquet data loading with numpy caching
+    numerapi_datasets.py  # NumerAPI dataset resolution (int8/float32 auto-detection)
+    benchmarks.py         # Benchmark download, alignment, and coverage validation
+  inference/
+    runtime.py            # Live inference: data loading, prediction, submission, quality gates
+    postprocess.py        # Gauss-rank, benchmark neutralization, alpha blending, feature neutralization
+  training/
+    pipeline.py           # Main training orchestrator: config -> data -> tune -> train -> artifact
+    runtime.py            # Model fitting, early stopping, CORR scanning, seed training loop
+    tuning.py             # Walk-forward evaluation and blend hyperparameter grid search
+    checkpoints.py        # Generic + training-specific checkpoint I/O with signature validation
+    artifact.py           # Artifact packaging and W&B registry upload
+    dry_run.py            # Synthetic dry-run for CI smoke testing
+    walkforward.py        # Walk-forward window construction
+tools/
+  validate_pipeline.py    # Artifact contract validation CLI
+tests/                    # Unit + integration tests
+notebooks/
+  train_colab.ipynb       # Thin Colab notebook (setup + single CLI dispatch)
+.github/workflows/
+  submit.yml              # Scheduled inference submission (Tue-Sat cron)
+  ci.yml                  # PR/push: lint + dry-run validation
+  promote-model.yml       # Manual model promotion
+```
+
+---
+
+## Pipeline Details
+
+### Training Pipeline
+
+```mermaid
+flowchart TD
+  A[CLI: train_colab] --> B[Config: TrainRuntimeConfig ~80 env vars]
+  B --> C[Pipeline Orchestrator]
+  C --> D[NumerAPI Dataset Download + Benchmark Alignment]
+  C --> E[Walk-Forward Evaluation + CORR Scanning]
+  C --> F[Blend Hyperparameter Tuning alpha x neutralize grid]
+  C --> G[Multi-Seed Ensemble Training with Feature Sharding]
+  G --> H[Checkpoint/Resume at Every Seed]
+  H --> I[Artifact Build: Models + Manifest + Features + Postprocess]
+  I --> J[W&B Model Registry: candidate + latest aliases]
+```
+
+- **Input**: NumerAI tournament dataset (v5.x, ~1M rows, ~2000+ features)
+- **Method**: LightGBM with walk-forward-tuned iteration count, per-seed sharded feature subsets, benchmark-model neutralization
+- **Output**: Versioned artifact containing N model files + JSON contract metadata
+
+### Inference Pipeline
+
+```mermaid
+flowchart TD
+  A[CLI: inference] --> B[Config: InferenceRuntimeConfig]
+  B --> C[W&B Artifact Download prod alias]
+  C --> D[Contract Validation: manifest + features + postprocess]
+  D --> E[Live Data Download from NumerAPI]
+  E --> F[Ensemble Prediction N models]
+  F --> G[Postprocess: Gauss-rank + Neutralization + Blend]
+  G --> H[Quality Gates: NaN/Inf, rank bounds, std, exposure]
+  H --> I[NumerAPI Submission Upload]
+```
+
+- **Trigger**: GitHub Actions cron (multiple windows per round day) or manual dispatch
+- **Safety**: Dry-run mode, drift guard abort, automated GitHub Issue on failure
+- **Output**: Validated CSV submission uploaded to NumerAI tournament
+
+---
 
 ## Quickstart
 
 ### Train in Colab
-1. Open `notebooks/train_colab.ipynb`.
-2. Set Colab secret `WANDB_API_KEY`.
-3. Run setup cell, then run training cell (launches `python -m numerai_re.cli.train_colab`).
+1. Open `notebooks/train_colab.ipynb`
+2. Set Colab secret `WANDB_API_KEY`
+3. Run all cells (setup + single CLI dispatch)
 
-### Run inference in GitHub Actions
-1. Configure required repo secrets: `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_API_KEY`, `WANDB_ENTITY`, `WANDB_PROJECT`.
-2. Trigger `.github/workflows/submit.yml` manually or wait for schedule.
-  - Scheduled cadence is aligned to Numerai round windows (Tue-Fri multiple runs in 13:00-14:00 UTC, Saturday early + follow-up pass).
-  - Policy is single attempt per workflow run; failures create a GitHub issue alert.
-  - Manual dispatch supports `submission_mode=dry_run` for safe workflow testing (no Numerai upload) and `submission_mode=live` for real submissions.
-  - Each run uploads `infer.log` as a workflow artifact and writes submission metadata to the job summary.
+### Inference via GitHub Actions
+1. Configure repo secrets: `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_API_KEY`, `WANDB_ENTITY`, `WANDB_PROJECT`
+2. Trigger `.github/workflows/submit.yml` manually or wait for schedule (Tue-Sat)
+3. Manual dispatch supports `dry_run` mode for safe testing
 
-### Run inference locally (first-time friendly)
-1. Follow the manual runbook in `inference_local_workflow.md`.
-2. Optional quick path from repo root (PowerShell):
-  - `.\.venv\Scripts\Activate.ps1`
-  - `$env:PYTHONPATH="src"`
-  - `python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod`
-  - `python -m numerai_re.cli.promote_model`
-  - `cmd /c "python -m numerai_re.cli.inference 2>&1" | Tee-Object -FilePath infer_live.log`
-
-## Repository Structure
-
-```text
-.
-├─ artifacts/
-├─ docs/
-│  ├─ env_reference.md
-│  └─ SMOKE_TESTS.md
-├─ notebooks/
-├─ src/
-│  └─ numerai_re/
-│     ├─ cli/            # train/infer/promote entry modules
-│     ├─ contracts/      # artifact and manifest contract checks
-│     ├─ runtime/        # runtime config parsing from env
-│     ├─ data/           # dataset and benchmark loading/alignment
-│     ├─ features/       # feature sampling
-│     ├─ metrics/        # NumerAI metrics and neutralization math
-│     ├─ common/         # shared utilities
-│     ├─ training/       # training pipeline internals
-│     └─ inference/      # inference runtime and postprocess
-├─ tests/
-│  ├─ integration/
-│  └─ unit/
-└─ tools/
+### Promote a Model
+```bash
+# Validates candidate artifact, then aliases to prod
+python -m numerai_re.cli.promote_model
 ```
 
-## Train Pipeline Structure
-
-```mermaid
-flowchart TD
-  A[CLI: numerai_re.cli.train_colab] --> B[Runtime Config: runtime.config.TrainRuntimeConfig]
-  B --> C[Pipeline Orchestrator: training.training_pipeline]
-  C --> D[Data Layer: data_loading / numerapi_datasets / benchmarks]
-  C --> E[Feature Layer: features.feature_sampling]
-  C --> F[Model Layer: training_runtime + training_seed_runner]
-  C --> G[Tuning Layer: training_tuning + walkforward + tune_blend]
-  C --> H[Checkpoint Layer: training_checkpoint]
-  C --> I[Artifact Layer: training_artifact + contracts.artifact_contract]
-  I --> J[W&B Model Registry candidate/latest]
-```
-
-- Contains: config parsing, dataset acquisition, benchmark alignment, feature subset strategy, walk-forward tuning, seed ensemble training, checkpoint/resume, and artifact publication.
-- Output: trained LightGBM model files + manifest/features/postprocess contract files in artifact storage.
-
-## Inference Pipeline Structure
-
-```mermaid
-flowchart TD
-  A[CLI: numerai_re.cli.inference] --> B[Runtime Config: runtime.config.InferenceRuntimeConfig]
-  B --> C[Artifact Contract Load: contracts.artifact_contract]
-  C --> D[Inference Runtime: inference.inference_runtime]
-  D --> E[Live Data Loader: data.numerapi_datasets]
-  D --> F[Model Predictors]
-  F --> G[Postprocess: inference.postprocess]
-  G --> H[Quality Gates: std/exposure/schema checks]
-  H --> I[Submission Writer + NumerAPI upload]
-```
-
-- Contains: promoted artifact retrieval, manifest compatibility checks, live feature loading, ensemble prediction, postprocessing, and drift/quality gating.
-- Output: validated submission predictions uploaded to NumerAI (or dry-run artifacts locally).
+---
 
 ## Environment Variables
 
-- Full reference moved to `docs/env_reference.md`.
-- Runtime defaults and parsing logic are defined in:
-  - `src/numerai_re/runtime/config.py`
-- Minimum required by context:
-  - Training (Colab): `WANDB_API_KEY`
-  - Inference (GitHub Actions): `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_API_KEY`, `WANDB_ENTITY`, `WANDB_PROJECT`
+Full reference: [`docs/env_reference.md`](docs/env_reference.md)
+
+Runtime config parsing: `src/numerai_re/config.py`
+
+**Required by context:**
+- Training (Colab): `WANDB_API_KEY`
+- Inference (GitHub Actions): `NUMERAI_PUBLIC_ID`, `NUMERAI_SECRET_KEY`, `NUMERAI_MODEL_NAME`, `WANDB_API_KEY`, `WANDB_ENTITY`, `WANDB_PROJECT`
+
+---
+
+## CI / CD
+
+| Workflow | Trigger | Jobs |
+|---|---|---|
+| `ci.yml` | PR + push to main | `lint-compile` (ruff + compileall), `dry-run-pipeline` (train + validate + infer) |
+| `submit.yml` | Cron (Tue-Sat) + manual | Download artifact, run inference, upload to NumerAI, alert on failure |
+| `promote-model.yml` | Manual dispatch | Validate candidate artifact, alias to `prod` in W&B |
+
+---
 
 ## Local Checks
 
-Run from repository root:
-
 ```bash
-PYTHONPATH=src python -m py_compile src/numerai_re/cli/train_colab.py src/numerai_re/cli/inference.py src/numerai_re/runtime/config.py src/numerai_re/cli/promote_model.py
+PYTHONPATH=src python -m compileall -q src tests tools
 ruff check src
 PYTHONPATH=src python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod
 PYTHONPATH=src TRAIN_DRY_RUN=true python -m numerai_re.cli.train_colab
 PYTHONPATH=src INFER_DRY_RUN=true python -m numerai_re.cli.inference
 ```
-
-## CI Policy
-
-- Pull requests and pushes to `main` run `.github/workflows/ci.yml` with two required jobs:
-  - `lint-compile` (`compileall` + `ruff check src`)
-  - `dry-run-pipeline` (`TRAIN_DRY_RUN`, `validate_pipeline`, `INFER_DRY_RUN`)
-- Code changes should merge only after CI is green. If CI fails due to legitimate workflow drift, update workflow definitions in the same change set.
-- Configure GitHub branch protection to require these CI checks before merge.
-
-## Live Ops Cadence
-
-- Inference submissions: run every round window (automation handles this via submit workflow schedule).
-- Retraining: run weekly, then promote only validated candidates to `prod`.
-- Score timing: live diagnostics usually appear after several days; fully settled round scoring can take about a month.
-- Practical implication: do not pause submissions while waiting for first score updates.

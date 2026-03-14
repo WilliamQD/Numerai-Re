@@ -19,7 +19,7 @@ HAS_REAL_POLARS = pl is not None and hasattr(pl, "col") and hasattr(pl, "DataFra
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from numerai_re.data.bench_matrix_builder import BenchmarkAlignmentError, align_bench_to_ids
+from numerai_re.data.benchmarks import BenchmarkAlignmentError, align_bench_to_ids
 
 
 class BenchMatrixBuilderTests(unittest.TestCase):

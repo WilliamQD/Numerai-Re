@@ -17,7 +17,7 @@ try:
 except Exception:
     pass
 
-from numerai_re.training.training_checkpoint import load_training_checkpoint, write_training_checkpoint
+from numerai_re.training.checkpoints import load_training_checkpoint, write_training_checkpoint
 
 
 class TrainingCheckpointTests(unittest.TestCase):

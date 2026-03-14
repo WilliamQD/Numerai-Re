@@ -2,14 +2,14 @@
 
 ## Big Picture
 - Remote-train / auto-submit NumerAI system: training (Colab) logs model artifacts to W&B; inference (GitHub Actions) pulls promoted artifacts and submits.
-- Core boundary: `training/` produces artifact payloads; `inference/` consumes them; `contracts/artifact_contract.py` defines the handshake.
+- Core boundary: `training/` produces artifact payloads; `inference/` consumes them; `contracts.py` defines the handshake.
 - Treat `artifacts/*.json` (manifest/features/postprocess files) as API contracts.
 
 ## Key Paths
-- Train: `python -m numerai_re.cli.train_colab` -> `src/numerai_re/training/training_pipeline.py`
-- Infer: `python -m numerai_re.cli.inference` -> `src/numerai_re/inference/inference_runtime.py`
+- Train: `python -m numerai_re.cli.train_colab` -> `src/numerai_re/training/pipeline.py`
+- Infer: `python -m numerai_re.cli.inference` -> `src/numerai_re/inference/runtime.py`
 - Promote: `python -m numerai_re.cli.promote_model` (`candidate` -> `prod` after checks)
-- Runtime env parsing is centralized in `src/numerai_re/runtime/config.py`.
+- Runtime env parsing is centralized in `src/numerai_re/config.py`.
 
 ## Working Style (Open Guidance)
 - Keep full autonomy; aim for changes that improve correctness without unnecessary complexity.

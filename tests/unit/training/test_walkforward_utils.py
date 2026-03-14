@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from numerai_re.common.era_utils import era_to_int
+from numerai_re.shared import era_to_int
 from numerai_re.training.walkforward import build_windows
 
 

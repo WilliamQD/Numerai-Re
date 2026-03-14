@@ -9,7 +9,7 @@ from pathlib import Path
 
 import wandb
 
-from numerai_re.contracts.artifact_contract import (
+from numerai_re.contracts import (
     POSTPROCESS_FILENAME,
     REQUIRED_POSTPROCESS_KEYS,
     load_features_by_model,

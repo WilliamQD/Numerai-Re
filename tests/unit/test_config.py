@@ -4,7 +4,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from numerai_re.runtime.config import InferenceRuntimeConfig, TrainRuntimeConfig
+from numerai_re.config import InferenceRuntimeConfig, TrainRuntimeConfig
 
 
 class TrainRuntimeConfigTests(unittest.TestCase):

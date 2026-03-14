@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 from numerapi import NumerAPI
 
-from numerai_re.contracts.artifact_contract import resolve_model_files
-from numerai_re.runtime.config import InferenceRuntimeConfig
+from numerai_re.contracts import resolve_model_files
+from numerai_re.config import InferenceRuntimeConfig
 from numerai_re.data.numerapi_datasets import pick_benchmark_models_parquet, resolve_split_parquet
 from numerai_re.inference.postprocess import PostprocessConfig, apply_postprocess
 

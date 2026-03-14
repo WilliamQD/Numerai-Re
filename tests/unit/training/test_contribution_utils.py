@@ -9,9 +9,9 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from numerai_re.data.bench_matrix_builder import align_bench_to_ids
-from numerai_re.metrics.numerai_metrics import bmc_mean_per_era
-from numerai_re.training.tune_blend import blended_predictions
+from numerai_re.data.benchmarks import align_bench_to_ids
+from numerai_re.shared import bmc_mean_per_era
+from numerai_re.training.tuning import blended_predictions
 
 
 class ContributionUtilsTests(unittest.TestCase):

@@ -1,7 +1,7 @@
 # Environment Variable Reference
 
 Canonical runtime parsers:
-- `src/numerai_re/runtime/config.py` (`TrainRuntimeConfig.from_env`, `InferenceRuntimeConfig.from_env`)
+- `src/numerai_re/config.py` (`TrainRuntimeConfig.from_env`, `InferenceRuntimeConfig.from_env`)
 
 ## Required
 
@@ -90,7 +90,7 @@ Canonical runtime parsers:
 
 ## Local Inference Workflow (Windows PowerShell)
 
-Manual runbook is in `inference_local_workflow.md` at repo root.
+Manual runbook is in `docs/inference_local_workflow.md`.
 
 Quick manual flow from repo root:
 

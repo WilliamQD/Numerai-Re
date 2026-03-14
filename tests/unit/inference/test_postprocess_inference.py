@@ -11,7 +11,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from numerai_re.runtime.config import InferenceRuntimeConfig
+from numerai_re.config import InferenceRuntimeConfig
 from numerai_re.cli.inference import (
     RANK_01_EPSILON,
     DriftGuardError,
@@ -20,7 +20,7 @@ from numerai_re.cli.inference import (
     apply_quality_gates,
 )
 from numerai_re.inference.postprocess import PostprocessConfig, apply_postprocess
-from numerai_re.inference.inference_runtime import _align_live_benchmarks
+from numerai_re.inference.runtime import _align_live_benchmarks
 
 
 class _FakeNumerAPI:

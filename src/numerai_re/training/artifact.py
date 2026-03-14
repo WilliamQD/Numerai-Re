@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import wandb
 
-from numerai_re.contracts.artifact_contract import (
+from numerai_re.contracts import (
     FEATURES_BY_MODEL_FILENAME,
     FEATURES_FILENAME,
     FEATURES_UNION_FILENAME,

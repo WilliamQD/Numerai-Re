@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import wandb
 
-from numerai_re.contracts.artifact_contract import (
+from numerai_re.contracts import (
     FEATURES_BY_MODEL_FILENAME,
     FEATURES_FILENAME,
     FEATURES_UNION_FILENAME,
@@ -26,8 +26,8 @@ from numerai_re.contracts.artifact_contract import (
     validate_dataset_version,
     validate_model_files_exist,
 )
-from numerai_re.runtime.config import InferenceRuntimeConfig, _optional_bool_env
-from numerai_re.inference.inference_runtime import (
+from numerai_re.config import InferenceRuntimeConfig, _optional_bool_env
+from numerai_re.inference.runtime import (
     DriftGuardError,
     _model_feature_cols,
     apply_quality_gates,

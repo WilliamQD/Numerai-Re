@@ -8,7 +8,7 @@ import time
 
 from typing import Final
 
-from numerai_re.runtime.config import _optional_bool_env
+from numerai_re.config import _optional_bool_env
 
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
@@ -139,13 +139,13 @@ def _log_effective_knobs() -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
     if _optional_bool_env("TRAIN_DRY_RUN", default=False):
-        from numerai_re.training.training_dry_run import train_dry_run
+        from numerai_re.training.dry_run import train_dry_run
 
         train_dry_run()
     else:
         _apply_train_profile()
         _probe_lgbm_gpu_if_requested()
         _log_effective_knobs()
-        from numerai_re.training.training_pipeline import train
+        from numerai_re.training.pipeline import train
 
         train()

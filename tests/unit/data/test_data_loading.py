@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from numerai_re.data.data_loading import load_split_numpy, _cache_manifest_path, _cache_valid
+from numerai_re.data.loading import load_split_numpy, _cache_manifest_path, _cache_valid
 
 
 def _write_test_parquet(path: Path, n_rows: int = 20, seed: int = 0) -> list[str]:

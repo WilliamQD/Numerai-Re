@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from numerai_re.features.feature_sampling import sample_features_for_seed
+from numerai_re.shared import sample_features_for_seed
 
 
 class FeatureSamplingTests(unittest.TestCase):

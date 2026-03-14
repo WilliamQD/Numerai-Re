@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from scipy.stats import norm, rankdata
+from scipy.stats import rankdata
 
-from numerai_re.metrics.numerai_metrics import neutralize_to_matrix
+from numerai_re.shared import gauss_rank_by_era, neutralize_to_matrix
 
 
 @dataclass(frozen=True)
@@ -42,15 +42,6 @@ class PostprocessConfig:
         )
 
 
-def _gauss_rank_by_era(values: np.ndarray, era: np.ndarray) -> np.ndarray:
-    out = np.empty(values.shape[0], dtype=np.float32)
-    for era_value in np.unique(era):
-        mask = era == era_value
-        ranks = rankdata(values[mask], method="average")
-        out[mask] = norm.ppf((ranks - 0.5) / len(ranks)).astype(np.float32, copy=False)
-    return out
-
-
 def _rank_01_by_era(values: np.ndarray, era: np.ndarray) -> np.ndarray:
     out = np.empty(values.shape[0], dtype=np.float32)
     for era_value in np.unique(era):
@@ -68,14 +59,14 @@ def apply_postprocess(
     features: np.ndarray | None = None,
     bench_gauss: np.ndarray | None = None,
 ) -> np.ndarray:
-    pred_gauss = _gauss_rank_by_era(pred_raw, era)
+    pred_gauss = gauss_rank_by_era(pred_raw, era)
     blended = pred_gauss
 
     if bench is not None and bench.size:
         if bench_gauss is None:
             bench_gauss = np.empty_like(bench, dtype=np.float32)
             for idx in range(bench.shape[1]):
-                bench_gauss[:, idx] = _gauss_rank_by_era(bench[:, idx], era)
+                bench_gauss[:, idx] = gauss_rank_by_era(bench[:, idx], era)
         elif bench_gauss.shape != bench.shape:
             raise ValueError("bench_gauss must have same shape as bench.")
         resid = neutralize_to_matrix(pred_gauss, bench_gauss, proportion=cfg.bench_neutralize_prop)
@@ -98,7 +89,7 @@ def apply_postprocess(
         blended = out
 
     if cfg.submission_transform == "gauss_rank":
-        return _gauss_rank_by_era(blended, era)
+        return gauss_rank_by_era(blended, era)
     if cfg.submission_transform == "rank_01":
         return _rank_01_by_era(blended, era)
     raise RuntimeError(f"Unsupported submission_transform in postprocess config: {cfg.submission_transform!r}")
