@@ -196,4 +196,7 @@ ruff check src
 PYTHONPATH=src python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod
 PYTHONPATH=src TRAIN_DRY_RUN=true python -m numerai_re.cli.train_colab
 PYTHONPATH=src INFER_DRY_RUN=true python -m numerai_re.cli.inference
+PYTHONPATH=src python -m tools.performance_tracker
 ```
+
+The performance tracker command writes timestamped raw payloads, normalized history, and a manual-staking recommendation to `artifacts/performance/`.

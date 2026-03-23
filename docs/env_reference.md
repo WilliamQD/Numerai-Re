@@ -88,6 +88,16 @@ Canonical runtime parsers:
 | `MIN_PRED_STD` | `1e-6` | Minimum prediction standard deviation gate. |
 | `MAX_ABS_EXPOSURE` | `0.30` | Maximum allowed absolute feature exposure. |
 
+## Performance Tracking Variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PERF_LOOKBACK_ROUNDS` | `20` | Number of latest resolved rounds used for evidence analysis. |
+| `PERF_MIN_RESOLVED_ROUNDS` | `2` | Minimum resolved rounds required before a positive recommendation is allowed. |
+| `PERF_RECOMMEND_THRESHOLD` | `65` | Evidence-score threshold for `EVIDENCE_SUFFICIENT_FOR_MANUAL_STAKING`. |
+| `PERF_PRIMARY_WEIGHT_CORR` | `0.75` | Weight for CORR in primary score formula. |
+| `PERF_PRIMARY_WEIGHT_SECONDARY` | `2.25` | Weight for BMC (preferred) or MMC fallback in primary score formula. |
+
 ## Local Inference Workflow (Windows PowerShell)
 
 Manual runbook is in `docs/inference_local_workflow.md`.
@@ -98,13 +108,13 @@ Quick manual flow from repo root:
 .\.venv\Scripts\Activate.ps1
 $env:PYTHONPATH="src"
 
-$env:WANDB_API_KEY="YOUR_WANDB_API_KEY"
-$env:WANDB_ENTITY="YOUR_WANDB_ENTITY"
-$env:WANDB_PROJECT="numerai-mlops"
-$env:WANDB_MODEL_NAME="lgbm_numerai_v52"
-$env:NUMERAI_PUBLIC_ID="YOUR_NUMERAI_PUBLIC_ID"
-$env:NUMERAI_SECRET_KEY="YOUR_NUMERAI_SECRET_KEY"
-$env:NUMERAI_MODEL_NAME="YOUR_NUMERAI_MODEL_NAME"
+$env:WANDB_API_KEY = Get-Secret -Name WANDB_API_KEY -AsPlainText
+$env:WANDB_ENTITY = Get-Secret -Name WANDB_ENTITY -AsPlainText
+$env:WANDB_PROJECT = Get-Secret -Name WANDB_PROJECT -AsPlainText
+$env:WANDB_MODEL_NAME = Get-Secret -Name WANDB_MODEL_NAME -AsPlainText
+$env:NUMERAI_PUBLIC_ID = Get-Secret -Name NUMERAI_PUBLIC_ID -AsPlainText
+$env:NUMERAI_SECRET_KEY = Get-Secret -Name NUMERAI_SECRET_KEY -AsPlainText
+$env:NUMERAI_MODEL_NAME = Get-Secret -Name NUMERAI_MODEL_NAME -AsPlainText
 
 python -m tools.validate_pipeline --dry-run --artifact-dir artifacts/mock_prod
 
@@ -116,7 +126,12 @@ python -m numerai_re.cli.promote_model
 
 cmd /c "python -m numerai_re.cli.inference 2>&1" | Tee-Object -FilePath infer_live.log
 Select-String -Path infer_live.log -Pattern "phase=artifact_downloaded|phase=frame_loaded|postprocess_loaded|DRIFT_GUARD_ABORT|Traceback|submit|upload|submission"
+
+# Retrieve, store, and analyze live performance evidence (manual staking decision support only)
+python -m tools.performance_tracker
 ```
+
+To configure secrets once, use PowerShell Secret Store with `Set-Secret`. Keep `.env.inference.local` only as a local fallback and never commit it.
 
 ## Colab Notebook Variables
 
